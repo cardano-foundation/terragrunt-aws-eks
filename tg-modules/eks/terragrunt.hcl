@@ -31,6 +31,21 @@ dependency "vpc" {
   }
 }
 
+generate "versions" {
+  path      = "versions_override.tf"
+  if_exists = "overwrite_terragrunt"
+  contents  = <<EOF
+    terraform {
+      required_providers {
+        kubernetes = {
+          source = "hashicorp/kubernetes"
+          version = "2.20.0"
+        }
+      }
+    }
+EOF
+}
+
 inputs = {
 
   vpcs_json = dependency.vpc.outputs.vpcs
