@@ -76,6 +76,7 @@ resource "helm_release" "${eks_region_k}_${eks_name}_${chart_k}" {
   repository = "${chart_v.repository}"
   %{ endif ~}
   namespace  = "${ chomp(try("${chart_v.namespace}", "default")) }"
+  create_namespace = true
   chart      = "${chart_k}"
   name       = "${chart_k}"
 
