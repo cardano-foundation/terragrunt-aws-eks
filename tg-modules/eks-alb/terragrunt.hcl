@@ -111,14 +111,14 @@ module "alb_${eks_region_k}_${eks_name}" {
   autoscale_group_names     = toset( [
     %{ for eng_name, eng_values in eks_values.node-groups ~}  
       %{ if try(eng_values.exposed-ports, "") != "" }
-    flatten(jsondecode(var.eks_node_groups_json).eks_node_group_${eks_region_k}_${eng_name}.eng_info.eks_node_group_resources[*][*].autoscaling_groups[*].name)[0],
+    flatten(jsondecode(var.eks_node_groups_json).eks_node_group_${eks_region_k}_${eks_name}_${eng_name}.eng_info.eks_node_group_resources[*][*].autoscaling_groups[*].name)[0],
       %{ endif ~}
     %{ endfor ~}
   ] )
   cluster_security_group_ids = toset( [
     %{ for eng_name, eng_values in eks_values.node-groups ~}  
       %{ if try(eng_values.exposed-ports, "") != "" }
-    jsondecode(var.eks_node_groups_sg_json).eks_node_group_sg_${eks_region_k}_${eng_name}.eng_sg_info.id,
+    jsondecode(var.eks_node_groups_sg_json).eks_node_group_sg_${eks_region_k}_${eks_name}_${eng_name}.eng_sg_info.id,
       %{ endif ~}
     %{ endfor ~}
   ] )

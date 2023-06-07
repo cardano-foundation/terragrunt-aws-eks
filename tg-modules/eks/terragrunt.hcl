@@ -277,7 +277,7 @@ output eks_node_groups {
     %{ for eng_name, eng_values in eks_values.node-groups ~} 
       {
         for key, value in module.eks_node_group_${eks_region_k}_${eks_name}_${eng_name}[*]:
-            "eks_node_group_${eks_region_k}_${eng_name}" => { "eng_info" = value }
+            "eks_node_group_${eks_region_k}_${eks_name}_${eng_name}" => { "eng_info" = value }
       },
     %{ endfor ~}
 
@@ -299,7 +299,7 @@ output eks_node_groups_sg {
       {
         %{ if try(eng_values.exposed-ports, "") != "" }
         for key, value in module.eks_node_group_sg_${eks_region_k}_${eks_name}_${eng_name}[*]:
-            "eks_node_group_sg_${eks_region_k}_${eng_name}" => { "eng_sg_info" = value }
+            "eks_node_group_sg_${eks_region_k}_${eks_name}_${eng_name}" => { "eng_sg_info" = value }
         %{ endif ~}
       },
     %{ endfor ~}

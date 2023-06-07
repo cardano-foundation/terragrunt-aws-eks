@@ -15,6 +15,7 @@ dependency "eks" {
   mock_outputs = {
     eks_clusters = {}
     eks_node_groups = {}
+    eks_node_groups_sg = {}
   }
 }
 
@@ -22,5 +23,6 @@ inputs = {
 
   eks_clusters_json = dependency.eks.outputs.eks_clusters
   eks_node_groups_json = dependency.eks.outputs.eks_node_groups
+  eks_node_groups_sg_json = dependency.eks.outputs.eks_node_groups_sg
 
 }
