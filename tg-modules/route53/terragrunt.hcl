@@ -51,7 +51,7 @@ resource "aws_route53_record" "eks_${eks_region_k}_${eks_name}" {
 
       %{ for hostname in try(eks_values.alb-dns-aliases, [] ) ~}
 
-resource "aws_route53_record" "eks_${eks_region_k}_${eks_name}_${hostname}" {
+resource "aws_route53_record" "eks_${eks_region_k}_${eks_name}_${ replace("${hostname}", ".", "_")}" {
   zone_id = data.aws_route53_zone.service_zone.zone_id
   name    = "${hostname}.${local.config.general.env-short}.${eks_name}.${eks_region_k}.${local.config.network.route53.zones.default.tld}"
   type    = "CNAME"
