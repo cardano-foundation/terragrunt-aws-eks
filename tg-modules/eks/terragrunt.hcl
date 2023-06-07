@@ -69,7 +69,7 @@ locals {
 module "label_${eks_region_k}_${eks_name}" {
 
   providers = {
-    aws = aws.${rds_region_k}
+    aws = aws.${eks_region_k}
   }
 
   source = "cloudposse/label/null"
@@ -87,7 +87,7 @@ module "label_${eks_region_k}_${eks_name}" {
 module "eks_cluster_${eks_region_k}_${eks_name}" {
 
   providers = {
-    aws = aws.${rds_region_k}
+    aws = aws.${eks_region_k}
   }
 
   source = "${ chomp(try(local.config.eks.cluster-module-source, "cloudposse/eks-cluster/aws")) }"
@@ -119,7 +119,7 @@ module "eks_cluster_${eks_region_k}_${eks_name}" {
 resource "aws_iam_role_policy_attachment" "alb_policy_${eks_region_k}_${eks_name}" {
 
   providers = {
-    aws = aws.${rds_region_k}
+    aws = aws.${eks_region_k}
   }
 
   policy_arn = aws_iam_policy.aws_alb_policy.arn
@@ -133,7 +133,7 @@ resource "aws_iam_role_policy_attachment" "alb_policy_${eks_region_k}_${eks_name
 module "eks_node_group_sg_${eks_region_k}_${eks_name}_${eng_name}" {
 
   providers = {
-    aws = aws.${rds_region_k}
+    aws = aws.${eks_region_k}
   }
 
   source = "cloudposse/security-group/aws"
@@ -167,7 +167,7 @@ module "eks_node_group_sg_${eks_region_k}_${eks_name}_${eng_name}" {
 module "eks_node_group_${eks_region_k}_${eks_name}_${eng_name}" {
 
   providers = {
-    aws = aws.${rds_region_k}
+    aws = aws.${eks_region_k}
   }
 
   source = "${ chomp(try(local.config.eks.node-group-module-source, "cloudposse/eks-node-group/aws")) }"
@@ -213,7 +213,7 @@ module "eks_node_group_${eks_region_k}_${eks_name}_${eng_name}" {
 resource "aws_iam_role_policy_attachment" "alb_ingress_policy_${eks_region_k}_${eks_name}_${eng_name}" {
 
   providers = {
-    aws = aws.${rds_region_k}
+    aws = aws.${eks_region_k}
   }
 
   policy_arn = aws_iam_policy.aws_alb_policy.arn
@@ -226,7 +226,7 @@ resource "aws_iam_role_policy_attachment" "alb_ingress_policy_${eks_region_k}_${
 resource "aws_iam_role_policy_attachment" "ebs_policy_${eks_region_k}_${eks_name}_${eng_name}_${iam_k}" {
 
   providers = {
-    aws = aws.${rds_region_k}
+    aws = aws.${eks_region_k}
   }
 
   policy_arn = "${iam_v}"

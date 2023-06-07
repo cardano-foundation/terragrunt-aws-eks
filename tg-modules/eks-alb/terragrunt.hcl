@@ -82,7 +82,7 @@ locals {
 module "acm_request_certificate_${eks_region_k}_${eks_name}" {
 
   providers = {
-    aws = aws.${rds_region_k}
+    aws = aws.${eks_region_k}
   }
 
   source = "cloudposse/acm-request-certificate/aws"
@@ -100,7 +100,7 @@ module "acm_request_certificate_${eks_region_k}_${eks_name}" {
 module "alb_${eks_region_k}_${eks_name}" {
 
   providers = {
-    aws = aws.${rds_region_k}
+    aws = aws.${eks_region_k}
   }
 
   source = "./tf-module"
