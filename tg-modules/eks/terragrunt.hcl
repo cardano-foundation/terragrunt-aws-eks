@@ -68,10 +68,6 @@ locals {
 
 module "label_${eks_region_k}_${eks_name}" {
 
-  providers = {
-    aws = aws.${eks_region_k}
-  }
-
   source = "cloudposse/label/null"
   version  = "0.25.0"
 
