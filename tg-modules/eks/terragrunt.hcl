@@ -113,11 +113,6 @@ module "eks_cluster_${eks_region_k}_${eks_name}" {
 }
 
 resource "aws_iam_role_policy_attachment" "alb_policy_${eks_region_k}_${eks_name}" {
-
-  providers = {
-    aws = aws.${eks_region_k}
-  }
-
   policy_arn = aws_iam_policy.aws_alb_policy.arn
   role       = split("/", module.eks_cluster_${eks_region_k}_${eks_name}.eks_cluster_role_arn)[1]
 }
@@ -207,11 +202,6 @@ module "eks_node_group_${eks_region_k}_${eks_name}_${eng_name}" {
 }
 
 resource "aws_iam_role_policy_attachment" "alb_ingress_policy_${eks_region_k}_${eks_name}_${eng_name}" {
-
-  providers = {
-    aws = aws.${eks_region_k}
-  }
-
   policy_arn = aws_iam_policy.aws_alb_policy.arn
   role       = module.eks_node_group_${eks_region_k}_${eks_name}_${eng_name}.eks_node_group_role_name
 }
@@ -220,11 +210,6 @@ resource "aws_iam_role_policy_attachment" "alb_ingress_policy_${eks_region_k}_${
         %{ for iam_k, iam_v in eng_values.extra-iam-policies ~}
 
 resource "aws_iam_role_policy_attachment" "ebs_policy_${eks_region_k}_${eks_name}_${eng_name}_${iam_k}" {
-
-  providers = {
-    aws = aws.${eks_region_k}
-  }
-
   policy_arn = "${iam_v}"
   role       = module.eks_node_group_${eks_region_k}_${eks_name}_${eng_name}.eks_node_group_role_name
 }
