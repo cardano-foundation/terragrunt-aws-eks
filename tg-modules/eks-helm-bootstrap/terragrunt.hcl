@@ -41,11 +41,6 @@ generate "dynamic-helm-modules" {
   %{ for eks_name, eks_values in eks_region_v ~}
 
 data "aws_eks_cluster_auth" "eks_auth_${eks_region_k}_${eks_name}" {
-
-  providers = {
-    aws = aws.${eks_region_k}
-  }
-
   name  = jsondecode(var.eks_clusters_json).eks_cluster_${eks_region_k}_${eks_name}.eks_info.eks_cluster_id
 }
 
