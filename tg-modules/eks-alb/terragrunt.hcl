@@ -80,6 +80,11 @@ locals {
   %{ for eks_name, eks_values in eks_region_v ~}
 
 module "acm_request_certificate_${eks_region_k}_${eks_name}" {
+
+  providers = {
+    aws = aws.${rds_region_k}
+  }
+
   source = "cloudposse/acm-request-certificate/aws"
   version = "0.16.3"
   zone_name                         = "${ chomp(try(local.config.network.route53.zones.default.tld, "cluster.local")) }"
@@ -93,6 +98,10 @@ module "acm_request_certificate_${eks_region_k}_${eks_name}" {
 }
 
 module "alb_${eks_region_k}_${eks_name}" {
+
+  providers = {
+    aws = aws.${rds_region_k}
+  }
 
   source = "./tf-module"
 

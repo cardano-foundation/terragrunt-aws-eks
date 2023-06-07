@@ -67,6 +67,11 @@ locals {
   %{ for eks_name, eks_values in eks_region_v ~}
 
 module "label_${eks_region_k}_${eks_name}" {
+
+  providers = {
+    aws = aws.${rds_region_k}
+  }
+
   source = "cloudposse/label/null"
   version  = "0.25.0"
 
@@ -80,6 +85,10 @@ module "label_${eks_region_k}_${eks_name}" {
 }
 
 module "eks_cluster_${eks_region_k}_${eks_name}" {
+
+  providers = {
+    aws = aws.${rds_region_k}
+  }
 
   source = "${ chomp(try(local.config.eks.cluster-module-source, "cloudposse/eks-cluster/aws")) }"
   version = "${ chomp(try(local.config.eks.cluster-module-version, "2.6.0")) }"
@@ -108,6 +117,11 @@ module "eks_cluster_${eks_region_k}_${eks_name}" {
 }
 
 resource "aws_iam_role_policy_attachment" "alb_policy_${eks_region_k}_${eks_name}" {
+
+  providers = {
+    aws = aws.${rds_region_k}
+  }
+
   policy_arn = aws_iam_policy.aws_alb_policy.arn
   role       = split("/", module.eks_cluster_${eks_region_k}_${eks_name}.eks_cluster_role_arn)[1]
 }
@@ -117,6 +131,11 @@ resource "aws_iam_role_policy_attachment" "alb_policy_${eks_region_k}_${eks_name
       %{ if try(eng_values.exposed-ports, "") != "" } 
 
 module "eks_node_group_sg_${eks_region_k}_${eks_name}_${eng_name}" {
+
+  providers = {
+    aws = aws.${rds_region_k}
+  }
+
   source = "cloudposse/security-group/aws"
   version = "2.0.1"
   context = module.label_${eks_region_k}_${eks_name}.context
@@ -146,6 +165,10 @@ module "eks_node_group_sg_${eks_region_k}_${eks_name}_${eng_name}" {
      %{ endif ~}
 
 module "eks_node_group_${eks_region_k}_${eks_name}_${eng_name}" {
+
+  providers = {
+    aws = aws.${rds_region_k}
+  }
 
   source = "${ chomp(try(local.config.eks.node-group-module-source, "cloudposse/eks-node-group/aws")) }"
   version = "${ chomp(try(local.config.eks.node-group-module-version, "2.6.0")) }"
@@ -188,6 +211,11 @@ module "eks_node_group_${eks_region_k}_${eks_name}_${eng_name}" {
 }
 
 resource "aws_iam_role_policy_attachment" "alb_ingress_policy_${eks_region_k}_${eks_name}_${eng_name}" {
+
+  providers = {
+    aws = aws.${rds_region_k}
+  }
+
   policy_arn = aws_iam_policy.aws_alb_policy.arn
   role       = module.eks_node_group_${eks_region_k}_${eks_name}_${eng_name}.eks_node_group_role_name
 }
@@ -196,6 +224,11 @@ resource "aws_iam_role_policy_attachment" "alb_ingress_policy_${eks_region_k}_${
         %{ for iam_k, iam_v in eng_values.extra-iam-policies ~}
 
 resource "aws_iam_role_policy_attachment" "ebs_policy_${eks_region_k}_${eks_name}_${eng_name}_${iam_k}" {
+
+  providers = {
+    aws = aws.${rds_region_k}
+  }
+
   policy_arn = "${iam_v}"
   role       = module.eks_node_group_${eks_region_k}_${eks_name}_${eng_name}.eks_node_group_role_name
 }
