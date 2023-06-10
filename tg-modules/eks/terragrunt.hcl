@@ -151,6 +151,12 @@ module "eks_node_group_sg_${eks_region_k}_${eks_name}_${eng_name}" {
     %{ endfor ~}
   ]
 
+  %{ if get_env("AWS_ASSUMED_ROLE", "") != "" }
+  kube_exec_auth_role_arn = get_env("AWS_ASSUMED_ROLE", "")
+  kube_exec_auth_role_arn_enabled = true
+  %{ endif ~}
+  
+
 }
 
      %{ endif ~}
