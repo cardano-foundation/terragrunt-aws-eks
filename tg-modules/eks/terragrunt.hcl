@@ -110,6 +110,11 @@ module "eks_cluster_${eks_region_k}_${eks_name}" {
 
   ]
 
+  %{ if get_env("AWS_ASSUMED_ROLE", "") != "" }
+  kube_exec_auth_role_arn = get_env("AWS_ASSUMED_ROLE", "")
+  kube_exec_auth_role_arn_enabled = true
+  %{ endif ~}
+
 }
 
 resource "aws_iam_role_policy_attachment" "alb_policy_${eks_region_k}_${eks_name}" {
@@ -149,13 +154,7 @@ module "eks_node_group_sg_${eks_region_k}_${eks_name}_${eng_name}" {
       cidr_blocks = [ %{ for cidr_filter in sg_rule_values.cidr-filters ~} "${cidr_filter}", %{ endfor ~} ]
     },
     %{ endfor ~}
-  ]
-
-  %{ if get_env("AWS_ASSUMED_ROLE", "") != "" }
-  kube_exec_auth_role_arn = get_env("AWS_ASSUMED_ROLE", "")
-  kube_exec_auth_role_arn_enabled = true
-  %{ endif ~}
-  
+  ] 
 
 }
 
