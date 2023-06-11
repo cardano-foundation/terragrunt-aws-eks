@@ -66,6 +66,14 @@ locals {
 
   %{ for eks_name, eks_values in eks_region_v ~}
 
+    %{ for rolename in try(eks_values.aws-auth-extra-roles, [] ) ~}
+
+data "aws_iam_role" "aws_auth_extra_role_${rolename}" {
+  name = "${rolename}"
+}
+
+    %{ endfor ~}
+
 module "label_${eks_region_k}_${eks_name}" {
 
   source = "cloudposse/label/null"
@@ -110,6 +118,17 @@ module "eks_cluster_${eks_region_k}_${eks_name}" {
 
   ]
 
+
+  map_additional_iam_roles = [
+  %{ for rolename in try(eks_values.aws-auth-extra-roles, [] ) ~}
+    {
+      rolearn = data.aws_iam_role.aws_auth_extra_role_${rolename}.arn
+      username = "admins"
+      groups = ["system:masters"]
+    },
+  %{ endfor ~}
+  ]
+
 }
 
 resource "aws_iam_role_policy_attachment" "alb_policy_${eks_region_k}_${eks_name}" {
@@ -149,7 +168,7 @@ module "eks_node_group_sg_${eks_region_k}_${eks_name}_${eng_name}" {
       cidr_blocks = [ %{ for cidr_filter in sg_rule_values.cidr-filters ~} "${cidr_filter}", %{ endfor ~} ]
     },
     %{ endfor ~}
-  ]
+  ] 
 
 }
 
