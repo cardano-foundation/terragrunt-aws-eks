@@ -111,8 +111,6 @@ module "eks_cluster_${eks_region_k}_${eks_name}" {
   ]
 
   %{ if get_env("AWS_ASSUMED_ROLE", "") != "" }
-  kube_exec_auth_role_arn = "${ get_env("AWS_ASSUMED_ROLE", "") }"
-  kube_exec_auth_role_arn_enabled = true
   kube_data_auth_enabled = true
   %{ endif ~}
 
