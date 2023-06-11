@@ -113,7 +113,7 @@ module "eks_cluster_${eks_region_k}_${eks_name}" {
   %{ if get_env("AWS_ASSUMED_ROLE", "") != "" }
   kube_exec_auth_role_arn = "${ get_env("AWS_ASSUMED_ROLE", "") }"
   kube_exec_auth_role_arn_enabled = true
-  kubernetes_config_map_ignore_role_changes = 0
+  kubernetes_config_map_ignore_role_changes = false
   %{ endif ~}
 
 }
