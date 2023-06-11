@@ -66,6 +66,14 @@ locals {
 
   %{ for eks_name, eks_values in eks_region_v ~}
 
+    %{ for rolename in try(eks_values.aws-auth-extra-roles, [] ) ~}
+
+data "aws_iam_role" "aws_auth_extra_role_${rolename}" {
+  name = "${rolename}"
+}
+
+    %{ endfor ~}
+
 module "label_${eks_region_k}_${eks_name}" {
 
   source = "cloudposse/label/null"
@@ -110,9 +118,16 @@ module "eks_cluster_${eks_region_k}_${eks_name}" {
 
   ]
 
-  %{ if get_env("AWS_ASSUMED_ROLE", "") != "" }
-  kube_data_auth_enabled = true
-  %{ endif ~}
+
+  map_additional_iam_roles = [
+  %{ for rolename in try(eks_values.aws-auth-extra-roles, [] ) ~}
+    {
+      rolearn = data.aws_iam_role.aws_auth_extra_role_${rolename}.arn
+      username = "admins"
+      groups = ["system:masters"]
+    },
+  %{ endfor ~}
+  ]
 
 }
 
