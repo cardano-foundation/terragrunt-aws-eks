@@ -79,11 +79,9 @@ module "label_${eks_region_k}_${eks_name}" {
   source = "cloudposse/label/null"
   version  = "0.25.0"
 
-#  stage      = "${ chomp(try(local.config.general.env-short, "dev")) }"
-#  namespace  = "${eks_region_k}"
   stage      = ""
   namespace  = ""
-  name       = "${ chomp(try(local.config.general.env-short, "dev")) }-${eks_name}"
+  name       = "$${local.env_short}-${eks_name}"
   delimiter  = "-"
   attributes = ["cluster"]
 }
@@ -184,7 +182,7 @@ module "eks_node_group_${eks_region_k}_${eks_name}_${eng_name}" {
   version = "${ chomp(try(local.config.eks.node-group-module-version, "2.6.0")) }"
   context = module.label_${eks_region_k}_${eks_name}.context
 
-  name = "${ chomp(try(local.config.general.env-short, "dev")) }-${eks_name}-${eng_name}"
+  name = "$${local.env_short}-${eks_name}-${eng_name}"
   instance_types                     = [%{ for type in eng_values.instance-types ~} "${type}", %{ endfor ~}]
   subnet_ids                         = jsondecode(var.vpcs_json).vpc_${eks_region_k}_${eks_values.vpc}.subnets_info.subnet_${eks_region_k}_${eks_values.vpc}_${eks_values.subnet}.public_subnet_ids
   desired_size                       = ${ chomp(try("${eng_values.desired-size}", 1) ) }
