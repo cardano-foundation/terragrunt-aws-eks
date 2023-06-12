@@ -68,8 +68,8 @@ locals {
 
     %{ for rolename in try(eks_values.aws-auth-extra-roles, [] ) ~}
 
-data "aws_iam_role" "aws_auth_extra_role_${rolename}" {
-  name = "${rolename}"
+data "aws_iam_roles" "aws_auth_extra_role_${ replace("${rolename}", "*", "wildcard")}" {
+  name_regex = "${rolename}"
 }
 
     %{ endfor ~}
@@ -120,7 +120,7 @@ module "eks_cluster_${eks_region_k}_${eks_name}" {
   map_additional_iam_roles = [
   %{ for rolename in try(eks_values.aws-auth-extra-roles, [] ) ~}
     {
-      rolearn = data.aws_iam_role.aws_auth_extra_role_${rolename}.arn
+      rolearn = tolist(data.aws_iam_roles.aws_auth_extra_role_${ replace("${rolename}", "*", "wildcard")}.arns)[0]
       username = "admins"
       groups = ["system:masters"]
     },
