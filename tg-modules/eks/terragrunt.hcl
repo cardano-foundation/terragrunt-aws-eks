@@ -21,12 +21,12 @@ dependency "vpc" {
   mock_outputs_allowed_terraform_commands = ["init", "validate", "plan"]
   mock_outputs = {
     vpcs = {
-      "vpc_eu-west-1_${local.config.network.default_vpc}":      { "vpc_info": { "vpc_id": "a1b2c3" }, "subnets_info": { "subnet_eu-west-1_${local.config.network.default_vpc}_pub": { "public_subnet_ids": ["snid123"], "private_subnet_ids": ["snid123"] } } }
-      "vpc_ap-south-1_${local.config.network.default_vpc}":     { "vpc_info": { "vpc_id": "a1b2c3" }, "subnets_info": { "subnet_ap-south-1_${local.config.network.default_vpc}_pub": { "public_subnet_ids": ["snid123"], "private_subnet_ids": ["snid123"] } } }
-      "vpc_ap-southeast-1_${local.config.network.default_vpc}": { "vpc_info": { "vpc_id": "a1b2c3" }, "subnets_info": { "subnet_ap-southeast-1_${local.config.network.default_vpc}_pub": { "public_subnet_ids": ["snid123"], "private_subnet_ids": ["snid123"] } } }
-      "vpc_eu-central-1_${local.config.network.default_vpc}":   { "vpc_info": { "vpc_id": "a1b2c3" }, "subnets_info": { "subnet_eu-central-1_${local.config.network.default_vpc}_pub": { "public_subnet_ids": ["snid123"], "private_subnet_ids": ["snid123"] } } }
-      "vpc_us-east-1_${local.config.network.default_vpc}":      { "vpc_info": { "vpc_id": "a1b2c3" }, "subnets_info": { "subnet_us-east-1_${local.config.network.default_vpc}_pub": { "public_subnet_ids": ["snid123"], "private_subnet_ids": ["snid123"] } } }
-      "vpc_us-east-2_${local.config.network.default_vpc}":      { "vpc_info": { "vpc_id": "a1b2c3" }, "subnets_info": { "subnet_us-east-2_${local.config.network.default_vpc}_pub": { "public_subnet_ids": ["snid123"], "private_subnet_ids": ["snid123"] } } }
+      "vpc_eu-west-1_${local.config.network.default_vpc}":      { "vpc_info": { "vpc_id": "a1b2c3" }, "subnets_info": { "subnet_eu-west-1_${local.config.network.default_vpc}_default": { "public_subnet_ids": ["snid123"], "private_subnet_ids": ["snid123"] } } }
+      "vpc_ap-south-1_${local.config.network.default_vpc}":     { "vpc_info": { "vpc_id": "a1b2c3" }, "subnets_info": { "subnet_ap-south-1_${local.config.network.default_vpc}_default": { "public_subnet_ids": ["snid123"], "private_subnet_ids": ["snid123"] } } }
+      "vpc_ap-southeast-1_${local.config.network.default_vpc}": { "vpc_info": { "vpc_id": "a1b2c3" }, "subnets_info": { "subnet_ap-southeast-1_${local.config.network.default_vpc}_default": { "public_subnet_ids": ["snid123"], "private_subnet_ids": ["snid123"] } } }
+      "vpc_eu-central-1_${local.config.network.default_vpc}":   { "vpc_info": { "vpc_id": "a1b2c3" }, "subnets_info": { "subnet_eu-central-1_${local.config.network.default_vpc}_default": { "public_subnet_ids": ["snid123"], "private_subnet_ids": ["snid123"] } } }
+      "vpc_us-east-1_${local.config.network.default_vpc}":      { "vpc_info": { "vpc_id": "a1b2c3" }, "subnets_info": { "subnet_us-east-1_${local.config.network.default_vpc}_default": { "public_subnet_ids": ["snid123"], "private_subnet_ids": ["snid123"] } } }
+      "vpc_us-east-2_${local.config.network.default_vpc}":      { "vpc_info": { "vpc_id": "a1b2c3" }, "subnets_info": { "subnet_us-east-2_${local.config.network.default_vpc}_default": { "public_subnet_ids": ["snid123"], "private_subnet_ids": ["snid123"] } } }
     }
   }
 }
@@ -97,8 +97,12 @@ module "eks_cluster_${eks_region_k}_${eks_name}" {
   context = module.label_${eks_region_k}_${eks_name}.context
 
   region     = "${eks_region_k}"
-  vpc_id     = jsondecode(var.vpcs_json).vpc_${eks_region_k}_${eks_values.vpc}.vpc_info.vpc_id
-  subnet_ids = jsondecode(var.vpcs_json).vpc_${eks_region_k}_${eks_values.vpc}.subnets_info.subnet_${eks_region_k}_${eks_values.vpc}_${eks_values.subnet}.public_subnet_ids
+  vpc_id                     = jsondecode(var.vpcs_json).vpc_${eks_region_k}_${eks_values.network.vpc}.vpc_info.vpc_id
+  %{ if eks_values.network.subnet.kind == "public" }
+  subnet_ids                    = jsondecode(var.vpcs_json).vpc_${eks_region_k}_${eks_values.network.vpc}.subnets_info.subnet_${eks_region_k}_${eks_values.network.vpc}_${eks_values.network.subnet.name}.public_subnet_ids
+  %{ else ~}
+  subnet_ids                   = jsondecode(var.vpcs_json).vpc_${eks_region_k}_${eks_values.network.vpc}.subnets_info.subnet_${eks_region_k}_${eks_values.network.vpc}_${eks_values.network.subnet.name}.private_subnet_ids
+  %{ endif ~}
 
   kubernetes_version    = "${ chomp(try("${eks_values.k8s-version}", "1.26") ) }"
   oidc_provider_enabled = true
@@ -148,7 +152,7 @@ module "eks_node_group_sg_${eks_region_k}_${eks_name}_${eng_name}" {
   version = "2.0.1"
   context = module.label_${eks_region_k}_${eks_name}.context
 
-  vpc_id     = jsondecode(var.vpcs_json).vpc_${eks_region_k}_${eks_values.vpc}.vpc_info.vpc_id
+  vpc_id     = jsondecode(var.vpcs_json).vpc_${eks_region_k}_${eks_values.network.vpc}.vpc_info.vpc_id
 
   # Here we add an attribute to give the security group a unique name.
   attributes = ["eks-node-group-${eks_name}-${eng_name}"]
@@ -184,7 +188,11 @@ module "eks_node_group_${eks_region_k}_${eks_name}_${eng_name}" {
 
   name = "$${local.env_short}-${eks_name}-${eng_name}"
   instance_types                     = [%{ for type in eng_values.instance-types ~} "${type}", %{ endfor ~}]
-  subnet_ids                         = jsondecode(var.vpcs_json).vpc_${eks_region_k}_${eks_values.vpc}.subnets_info.subnet_${eks_region_k}_${eks_values.vpc}_${eks_values.subnet}.public_subnet_ids
+  %{ if eks_values.network.subnet.kind == "public" }
+  subnet_ids                         = jsondecode(var.vpcs_json).vpc_${eks_region_k}_${eks_values.network.vpc}.subnets_info.subnet_${eks_region_k}_${eks_values.network.vpc}_${eks_values.network.subnet.name}.public_subnet_ids
+  %{ else ~}
+  subnet_ids                         = jsondecode(var.vpcs_json).vpc_${eks_region_k}_${eks_values.network.vpc}.subnets_info.subnet_${eks_region_k}_${eks_values.network.vpc}_${eks_values.network.subnet.name}.private_subnet_ids
+  %{ endif ~}
   desired_size                       = ${ chomp(try("${eng_values.desired-size}", 1) ) }
   min_size                           = ${ chomp(try("${eng_values.min-size}", 1) ) }
   max_size                           = ${ chomp(try("${eng_values.max-size}", 1) ) }

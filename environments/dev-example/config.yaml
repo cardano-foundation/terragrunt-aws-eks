@@ -56,8 +56,11 @@ eks:
       cluster-name-0:
         alb-dns-aliases: *alb-dns-aliases
         k8s-version: 1.26
-        vpc: exmaple-com
-        subnet: pub
+        network:
+          vpc: exmaple-com
+          subnet:
+            name: pub
+            kind: public
         addons:
           <<: *default-eks-addons
         helm-charts:

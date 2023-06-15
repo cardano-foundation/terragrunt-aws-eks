@@ -106,8 +106,12 @@ module "alb_${eks_region_k}_${eks_name}" {
   source = "./tf-module"
 
   cluster_name              = split(":", jsondecode(var.eks_clusters_json).eks_cluster_${eks_region_k}_${eks_name}.eks_info.eks_cluster_id)[0]
-  subnet_ids_list           = jsondecode(var.vpcs_json).vpc_${eks_region_k}_${eks_values.vpc}.subnets_info.subnet_${eks_region_k}_${eks_values.vpc}_${eks_values.subnet}.public_subnet_ids
-  vpcid                     = jsondecode(var.vpcs_json).vpc_${eks_region_k}_${eks_values.vpc}.vpc_info.vpc_id
+  %{ if eks_values.network.subnet.kind == "public" }
+  subnet_ids_list           = jsondecode(var.vpcs_json).vpc_${eks_region_k}_${eks_values.network.vpc}.subnets_info.subnet_${eks_region_k}_${eks_values.network.vpc}_${eks_values.network.subnet.name}.public_subnet_ids
+  %{ else ~}
+  subnet_ids_list           = jsondecode(var.vpcs_json).vpc_${eks_region_k}_${eks_values.network.vpc}.subnets_info.subnet_${eks_region_k}_${eks_values.network.vpc}_${eks_values.network.subnet.name}.private_subnet_ids
+  %{ endif ~}
+  vpcid                     = jsondecode(var.vpcs_json).vpc_${eks_region_k}_${eks_values.network.vpc}.vpc_info.vpc_id
   autoscale_group_names     = toset( [
     %{ for eng_name, eng_values in eks_values.node-groups ~}  
       %{ if try(eng_values.exposed-ports, "") != "" }
