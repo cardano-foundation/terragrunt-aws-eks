@@ -2,8 +2,6 @@ general:
   project: "example-com"
   env-short: "dev"
   region: "eu-west-1"
-  s3bucket-tfstate: "exmaple-com-tfstate"
-  dynamodb-tfstate: "exmaple-com-tfstate"
 
 default-exposed-ports: &default-exposed-ports
   traefik-nodeport:
