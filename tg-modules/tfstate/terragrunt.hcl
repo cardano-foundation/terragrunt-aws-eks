@@ -12,8 +12,8 @@ include "tf_main_config" {
 inputs = {
   project               = local.config.general.project
   env-short             = local.config.general.env-short
-  s3bucket-tfstate      = local.config.general.s3bucket-tfstate
-  dynamodb-tfstate      = local.config.general.dynamodb-tfstate
+  s3bucket-tfstate      = "${local.config.general.env-short}-${local.config.general.project}-tfstate"
+  dynamodb-tfstate      = "${local.config.general.env-short}-${local.config.general.project}-tfstate"
 }
 
 terraform {
