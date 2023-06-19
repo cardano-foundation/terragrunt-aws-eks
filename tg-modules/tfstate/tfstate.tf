@@ -2,6 +2,8 @@ data "aws_s3_bucket" "terraform_deployment" {
   bucket = "${var.s3bucket-tfstate}"
 }
 
+data "aws_caller_identity" "current" {}
+
 resource "aws_s3_bucket_acl" "terraform_deployment_bucket_acl" {
   bucket = data.aws_s3_bucket.terraform_deployment.id
   acl    = "private"
@@ -36,7 +38,8 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "terraform_deploym
 
   rule {
     apply_server_side_encryption_by_default {
-      sse_algorithm     = "AES256"
+      kms_master_key_id = "arn:aws:kms:${data.aws_s3_bucket.terraform_deployment.region}:${data.aws_caller_identity.current.account_id}:alias/aws/s3"
+      sse_algorithm     = "aws:kms"
     }
   }
   lifecycle {
