@@ -72,11 +72,15 @@ remote_state {
     if_exists = "overwrite"
   }
   config = {
-    bucket         = "${local.config.general.env-short}-${local.config.general.project}-tfstate"
-    region         = local.config.general.region
+
+    bucket         = try(local.config.general.s3bucket-tfstate, "${local.config.general.env-short}-${local.config.general.project}-tfstate")
+
+    dynamodb_table = try(local.config.general.dynamodb-tfstate, "${local.config.general.env-short}-${local.config.general.project}-tfstate")
+
+    region         = "${ chomp(try(local.config.general.region, "eu-west-1")) }"
     encrypt        = true
     key            = "${ get_env("ENVIRONMENT_NAME", "development") }/${basename(get_terragrunt_dir())}/terraform.tfstate"
-    dynamodb_table = "${local.config.general.env-short}-${local.config.general.project}-tfstate"
+
     profile        = "${ get_env("AWS_PROFILE", "default") }"
   }
 }
