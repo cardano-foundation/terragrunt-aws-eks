@@ -21,14 +21,12 @@ provider "aws" {
   }
 }
 
-%{ for vpc_region_k, vpc_region_v in try(local.config.network.vpc.regions, { } ) ~}
-
-  %{ for vpc_name, vpc_values in vpc_region_v ~}
+%{ for region in try(local.config.general.regions, { } ) ~}
 
 provider "aws" {
   profile = "${ chomp(get_env("AWS_PROFILE", "default")) }"
-  region  = "${vpc_region_k}"
-  alias = "${vpc_region_k}"
+  region  = "${region}"
+  alias = "${region}"
 
   default_tags {
     tags = {
@@ -37,8 +35,6 @@ provider "aws" {
     }
   }
 }
-
-  %{ endfor ~}
 
 %{ endfor ~}
 
@@ -72,15 +68,11 @@ remote_state {
     if_exists = "overwrite"
   }
   config = {
-
-    bucket         = try(local.config.general.s3bucket-tfstate, "${local.config.general.env-short}-${local.config.general.project}-tfstate")
-
-    dynamodb_table = try(local.config.general.dynamodb-tfstate, "${local.config.general.env-short}-${local.config.general.project}-tfstate")
-
+    bucket         = "${local.config.general.env-short}-${local.config.general.project}-tfstate"
     region         = "${ chomp(try(local.config.general.region, "eu-west-1")) }"
     encrypt        = true
     key            = "${ get_env("ENVIRONMENT_NAME", "development") }/${basename(get_terragrunt_dir())}/terraform.tfstate"
-
+    dynamodb_table = "${local.config.general.env-short}-${local.config.general.project}-tfstate"
     profile        = "${ get_env("AWS_PROFILE", "default") }"
   }
 }
