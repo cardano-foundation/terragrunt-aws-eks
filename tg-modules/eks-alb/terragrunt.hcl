@@ -59,6 +59,8 @@ generate "dynamic-alb-modules" {
 
 locals {
 
+  main_app_hostname = "${ chomp(try(local.config.network.route53.main-app-hostname, "${local.config.general.env-short}.${local.config.general.project}")) }"
+
   uuid_domain_names = {
 
 %{ for eks_region_k, eks_region_v in try(local.config.eks.regions, { } ) ~}
@@ -92,6 +94,15 @@ module "acm_request_certificate_${eks_region_k}_${eks_name}" {
   process_domain_validation_options = true
   ttl                               = "60"
   subject_alternative_names         = [
+    "$${local.main_app_hostname}.${local.config.network.route53.zones.default.tld}",
+    "*.$${local.main_app_hostname}.${local.config.network.route53.zones.default.tld}",
+
+    "${local.config.general.env-short}.${eks_name}.${local.config.network.route53.zones.default.tld}",
+    "*.${local.config.general.env-short}.${eks_name}.${local.config.network.route53.zones.default.tld}",
+
+    "${local.config.general.env-short}.${eks_name}.global.${local.config.network.route53.zones.default.tld}",
+    "*.${local.config.general.env-short}.${eks_name}.global.${local.config.network.route53.zones.default.tld}",
+
     "${local.config.general.env-short}.${eks_name}.${eks_region_k}.${local.config.network.route53.zones.default.tld}",
     "*.${local.config.general.env-short}.${eks_name}.${eks_region_k}.${local.config.network.route53.zones.default.tld}"
   ]

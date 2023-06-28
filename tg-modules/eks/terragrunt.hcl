@@ -81,7 +81,7 @@ module "label_${eks_region_k}_${eks_name}" {
 
   stage      = ""
   namespace  = ""
-  name       = "$${local.env_short}-${eks_name}"
+  name       = "$${local.env_short}-${eks_name}-${eks_region_k}"
   delimiter  = "-"
   attributes = ["cluster"]
 }
@@ -109,17 +109,18 @@ module "eks_cluster_${eks_region_k}_${eks_name}" {
   cluster_log_retention_period = "${ chomp(try("${eks_values.cluster-log-retention-period}", 7) ) }"
 
   addons = [ 
-    %{ for addon_name, addon_v in eks_values.addons ~}
+    %{ if try(eks_values.addons, "") != "" }
+      %{ for addon_name, addon_v in eks_values.addons ~}
      {
         addon_name =  "${addon_name}",
         addon_version = "${addon_v.addon-version}",
         %{ if try(addon_v.resolve-conflicts, "") != "" } resolve_conflicts = "${addon_v.resolve-conflicts}", %{ else } resolve_conflicts = "PRESERVE", %{ endif ~}
         %{ if try(addon_v.service-account-role-arn, "") != "" } service_account_role_arn = "${addon_v.service-account-role-arn}", %{ else } service_account_role_arn = null %{ endif ~}
      },
-    %{ endfor ~}
+      %{ endfor ~}
+    %{ endif ~}
 
   ]
-
 
   map_additional_iam_roles = [
   %{ for rolename in try(eks_values.aws-auth-extra-roles, [] ) ~}
@@ -140,6 +141,18 @@ resource "aws_iam_role_policy_attachment" "alb_policy_${eks_region_k}_${eks_name
 
     %{ for eng_name, eng_values in eks_values.node-groups ~} 
 
+module "node_group_label_${eks_region_k}_${eks_name}_${eng_name}" {
+
+  source = "cloudposse/label/null"
+  version  = "0.25.0"
+
+  stage      = ""
+  namespace  = ""
+  name       = "${eng_name}"
+  delimiter  = "-"
+  attributes = ["eks-cluster=$${local.env_short}}-${eks_region_k}-${eks_name}"]
+}
+
       %{ if try(eng_values.exposed-ports, "") != "" } 
 
 module "eks_node_group_sg_${eks_region_k}_${eks_name}_${eng_name}" {
@@ -150,7 +163,8 @@ module "eks_node_group_sg_${eks_region_k}_${eks_name}_${eng_name}" {
 
   source = "cloudposse/security-group/aws"
   version = "2.0.1"
-  context = module.label_${eks_region_k}_${eks_name}.context
+  #context = module.node_group_label_${eks_region_k}_${eks_name}_${eng_name}.context
+  name = "$${local.env_short}-${eks_name}-${eng_name}-${eks_region_k}"
 
   vpc_id     = jsondecode(var.vpcs_json).vpc_${eks_region_k}_${eks_values.network.vpc}.vpc_info.vpc_id
 
@@ -184,9 +198,9 @@ module "eks_node_group_${eks_region_k}_${eks_name}_${eng_name}" {
 
   source = "${ chomp(try(local.config.eks.node-group-module-source, "cloudposse/eks-node-group/aws")) }"
   version = "${ chomp(try(local.config.eks.node-group-module-version, "2.6.0")) }"
-  context = module.label_${eks_region_k}_${eks_name}.context
+  #context = module.node_group_label_${eks_region_k}_${eks_name}_${eng_name}.context
+  name = "$${local.env_short}-${eks_name}-${eng_name}-${eks_region_k}"
 
-  name = "$${local.env_short}-${eks_name}-${eng_name}"
   instance_types                     = [%{ for type in eng_values.instance-types ~} "${type}", %{ endfor ~}]
   %{ if eks_values.network.subnet.kind == "public" }
   subnet_ids                         = jsondecode(var.vpcs_json).vpc_${eks_region_k}_${eks_values.network.vpc}.subnets_info.subnet_${eks_region_k}_${eks_values.network.vpc}_${eks_values.network.subnet.name}.public_subnet_ids
