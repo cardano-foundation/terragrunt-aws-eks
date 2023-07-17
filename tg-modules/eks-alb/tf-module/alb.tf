@@ -37,6 +37,12 @@ resource "aws_alb_target_group" "main" {
     matcher             = "200-499"
   }
 
+  stickiness {
+    type          = var.stickiness_type
+    enabled       = var.stickiness_enabled
+    cookie_duration = var.stickiness_cookie_duration
+  }
+
   lifecycle {
     create_before_destroy = true
   }

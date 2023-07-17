@@ -114,3 +114,21 @@ variable "cluster_security_group_ids" {
   description = "*EKS cluster security group IDs; Enables communication between Loadbalancer and EKS cluster"
   default     = {}
 }
+
+variable "stickiness_enabled" {
+  type        = bool
+  description = "Enable stickiness"
+  default     = false
+}
+
+variable "stickiness_cookie_duration" {
+  type        = number
+  description = "Duration of stickiness cookie"
+  default     = 86400
+}
+
+variable "stickiness_type" {
+  type        = string
+  description = "Type of stickiness"
+  default     = "lb_cookie"
+}
