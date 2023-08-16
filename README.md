@@ -49,3 +49,18 @@ terragrunt plan
 ```
 
 Optionally you can also target specific resources for the module just like you'd do with plain terraform by adding `-target=resource_type.resource_name`.
+
+# Misc ops
+
+## Get kubeconfig for specific cluster
+
+```
+AWS_REGION=eu-west-1
+aws eks list-clusters
+# set cluster name from list above
+export CLUSTER_NAME=dev-example-com-cluster
+aws eks update-kubeconfig \
+  --region ${AWS_REGION}
+  --name ${CLUSTER_NAME}
+  --kubeconfig ~/.kube/${CLUSTER_NAME}-${AWS_REGION}.yaml
+```
