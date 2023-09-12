@@ -206,11 +206,29 @@ module "eks_node_group_${eks_region_k}_${eks_name}_${eng_name}" {
   name = "$${local.env_short}-${eks_name}-${eng_name}-${eks_region_k}"
 
   instance_types                     = [%{ for type in eng_values.instance-types ~} "${type}", %{ endfor ~}]
+
   %{ if eks_values.network.subnet.kind == "public" }
+    %{ if try(eng_values.network.availability-zones, "") != "" }
+  subnet_ids = [
+      %{ for az in eng_values.network.availability-zones ~}
+    element(jsondecode(var.vpcs_json).vpc_${eks_region_k}_${eks_values.network.vpc}.subnets_info.subnet_${eks_region_k}_${eks_values.network.vpc}_${eks_values.network.subnet.name}.az_public_subnets_map["${eks_region_k}${az}"], 0),
+      %{ endfor ~}
+  ]
+    %{ else ~}
   subnet_ids                         = jsondecode(var.vpcs_json).vpc_${eks_region_k}_${eks_values.network.vpc}.subnets_info.subnet_${eks_region_k}_${eks_values.network.vpc}_${eks_values.network.subnet.name}.public_subnet_ids
+    %{ endif ~}
   %{ else ~}
+    %{ if try(eng_values.network.availability-zones, "") != "" }
+  subnet_ids = [
+      %{ for az in eng_values.network.availability-zones ~}
+    element(jsondecode(var.vpcs_json).vpc_${eks_region_k}_${eks_values.network.vpc}.subnets_info.subnet_${eks_region_k}_${eks_values.network.vpc}_${eks_values.network.subnet.name}.az_private_subnets_map["${eks_region_}${az}"], 0),
+      %{ endfor ~}
+  ]
+    %{ else ~}
   subnet_ids                         = jsondecode(var.vpcs_json).vpc_${eks_region_k}_${eks_values.network.vpc}.subnets_info.subnet_${eks_region_k}_${eks_values.network.vpc}_${eks_values.network.subnet.name}.private_subnet_ids
+    %{ endif ~}
   %{ endif ~}
+
   desired_size                       = ${ chomp(try("${eng_values.desired-size}", 1) ) }
   min_size                           = ${ chomp(try("${eng_values.min-size}", 1) ) }
   max_size                           = ${ chomp(try("${eng_values.max-size}", 1) ) }
