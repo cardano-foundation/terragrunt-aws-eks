@@ -93,7 +93,7 @@ module "eks_cluster_${eks_region_k}_${eks_name}" {
   }
 
   source = "${ chomp(try(local.config.eks.cluster-module-source, "cloudposse/eks-cluster/aws")) }"
-  %{ if regex("git::", local.config.eks.cluster-module-source) != "git::" }
+  %{ if try(regex("git::", local.config.eks.cluster-module-source), "") != "git::" }
   version = "${ chomp(try(local.config.eks.cluster-module-version, "2.6.0")) }"
   %{ endif ~}
   context = module.label_${eks_region_k}_${eks_name}.context
@@ -199,7 +199,7 @@ module "eks_node_group_${eks_region_k}_${eks_name}_${eng_name}" {
   }
 
   source = "${ chomp(try(local.config.eks.node-group-module-source, "cloudposse/eks-node-group/aws")) }"
-  %{ if regex("git::", local.config.eks.node-group-module-source) != "git::" }
+  %{ if try(regex("git::", local.config.eks.node-group-module-source), "") != "git::" }
   version = "${ chomp(try(local.config.eks.node-group-module-version, "2.6.0")) }"
   %{ endif ~}
   #context = module.node_group_label_${eks_region_k}_${eks_name}_${eng_name}.context
