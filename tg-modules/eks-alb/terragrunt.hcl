@@ -90,7 +90,7 @@ module "acm_request_certificate_${eks_region_k}_${eks_name}" {
   source = "cloudposse/acm-request-certificate/aws"
   version = "0.16.3"
   zone_name                         = "${ chomp(try(local.config.network.route53.zones.default.tld, "cluster.local")) }"
-  domain_name                       = format("%s.%s", "$${local.uuid_domain_names["${local.config.general.env-short}.${eks_name}.${eks_region_k}"]}", "${local.config.network.route53.zones.default.tld}")
+  domain_name                       = substr(format("%s.%s", "$${local.uuid_domain_names["${local.config.general.env-short}.${eks_name}.${eks_region_k}"]}", "${local.config.network.route53.zones.default.tld}"), -64, -1)
   process_domain_validation_options = true
   ttl                               = "60"
   subject_alternative_names         = [
