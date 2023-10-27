@@ -5,6 +5,7 @@ resource "aws_alb" "main" {
   security_groups    = [aws_security_group.main.id]
   subnets            = var.subnet_ids_list
   preserve_host_header = true
+  drop_invalid_header_fields = true
 
   tags = merge({
     "ingress.k8s.aws/resource" = "LoadBalancer"
