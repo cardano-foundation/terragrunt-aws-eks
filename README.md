@@ -50,6 +50,36 @@ terragrunt plan
 
 Optionally you can also target specific resources for the module just like you'd do with plain terraform by adding `-target=resource_type.resource_name`.
 
+# Destroying everything
+
+Given that our `tg-modules` generate but JSON outputs that are passed as inputs to other modules, it can be tricky to destroy all the resources if there is some problem while destroying the plans altogether. For example, it might be the case that the `eks-alb` module failed to deregister some target group and when you retry to destroy it, the `eks` module itself is already destroyed so there is no input JSON to pass to `eks-alb` anymore.
+Since at this point where we want to destroy everything we don't care about inconsistencies on the plan, we can workaround the problem described below by saving the JSON I/Os with `terragrunt` and providing them so the destroy command won't complain. This can be accomplished by following the next steps:
+
+* Executing a `terragrunt run-all plan` like this:
+```
+terragrunt run-all plan \
+  --terragrunt-include-external-dependencies \
+  --terragrunt-non-interactive \
+  --terragrunt-debug
+```
+* Copying the most complete (the one including more input jsons, which is the `eks-alb` one) vars file to every `tg-module` so it's picked as an input tfvars file:
+```
+for tgm in tg-modules/*
+do
+    cp -a tg-modules/eks-alb/tg-modules/eks-alb/terragrunt-debug.tfvars.json $tgm/terraform.tfvars.json
+done
+```
+* Executing the destroy-all command from the `environment/$ENV` dir or executing them from each tg-module dir independently:
+```
+terragrunt run-all destroy \
+  --terragrunt-include-external-dependencies \
+  --terragrunt-non-interactive
+```
+* And last but not least, cleaning up the folders with: 
+```
+rm -f tg-modules/*/terraform.tfvars.json
+```
+
 # Misc ops
 
 ## Get kubeconfig for specific cluster
