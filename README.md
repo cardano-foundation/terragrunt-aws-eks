@@ -52,7 +52,8 @@ Optionally you can also target specific resources for the module just like you'd
 
 # Destroying everything
 
-Given that our `tg-modules` generate but JSON outputs that are passed as inputs to other modules, it can be tricky to destroy all the resources if there is some problem while destroying the plans altogether. For example, it might be the case that the `eks-alb` module failed to deregister some target group and when you retry to destroy it, the `eks` module itself is already destroyed so there is no input JSON to pass to `eks-alb` anymore.
+Given that our `tg-modules` generate JSON outputs that are passed as inputs to other modules, it can be tricky to destroy all the resources if there is some problem while destroying the modules altogether. For example, it might be the case that the `eks-alb` module failed to deregister some target group and when you retry to destroy it, the `eks` module itself is already destroyed so there is no input JSON to pass to `eks-alb` anymore.
+
 Since at this point where we want to destroy everything we don't care about inconsistencies on the plan, we can workaround the problem described below by saving the JSON I/Os with `terragrunt` and providing them so the destroy command won't complain. This can be accomplished by following the next steps:
 
 * Executing a `terragrunt run-all plan` like this:
