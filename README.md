@@ -67,7 +67,7 @@ terragrunt run-all plan \
 ```
 for tgm in tg-modules/*
 do
-    cp -a tg-modules/eks-alb/terragrunt-debug.tfvars.json $tgm/terraform.tfvars.json
+    jq 'with_entries(.value |= tostring )' tg-modules/eks-alb/terragrunt-debug.tfvars.json > $tgm/terraform.tfvars.json
 done
 ```
 * Executing the destroy-all command from the `environment/$ENV` dir or executing them from each tg-module dir independently:
