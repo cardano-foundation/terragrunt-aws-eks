@@ -83,7 +83,7 @@ for tgm in tg-modules/*; do cd $tgm; terragrunt destroy   --terragrunt-non-inter
 ```
 * And last but not least, cleaning up the folders with: 
 ```
-rm -f tg-modules/*/terraform.tfvars.json
+rm -f tg-modules/*/terraform.tfvars.json tg-modules/*/terragrunt-debug.tfvars.json
 ```
 
 # Misc ops
