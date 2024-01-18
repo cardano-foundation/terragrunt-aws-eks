@@ -70,11 +70,16 @@ do
     jq 'with_entries(.value |= tostring )' tg-modules/eks-alb/terragrunt-debug.tfvars.json > $tgm/terraform.tfvars.json
 done
 ```
-* Executing the destroy-all command from the `environment/$ENV` dir or executing them from each tg-module dir independently:
+* Executing the destroy-all command from the `environment/$ENV` dir or executing them from each tg-module dir independently (recommended):
+  * run-all:
 ```
 terragrunt run-all destroy \
   --terragrunt-include-external-dependencies \
   --terragrunt-non-interactive
+```
+  * run for each:
+```
+for tgm in tg-modules/*; do cd $tgm; terragrunt destroy   --terragrunt-non-interactive -auto-approve; cd -; done
 ```
 * And last but not least, cleaning up the folders with: 
 ```
