@@ -105,6 +105,9 @@ module "acm_request_certificate_${eks_region_k}_${eks_name}" {
 
     "${local.config.general.env-short}.${eks_name}.${eks_region_k}.${local.config.network.route53.zones.default.tld}",
     "*.${local.config.general.env-short}.${eks_name}.${eks_region_k}.${local.config.network.route53.zones.default.tld}"
+%{ for alb_hostname in try(local.config.network.alb.acm.extra-fqdn, { } ) ~}
+    , "${alb_hostname}"
+%{ endfor ~}
   ]
 }
 
