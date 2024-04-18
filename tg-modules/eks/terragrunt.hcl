@@ -256,6 +256,18 @@ module "eks_node_group_${eks_region_k}_${eks_name}_${eng_name}" {
   ]
   %{ endif ~}
 
+  %{ if try(eng_values.node-taints, "") != "" }
+  kubernetes_taints = [
+  %{ for nt_name, nt_value in eng_values.node-taints ~}
+    {
+      key    = "${nt_name}"
+      value  = "${nt_value.value}"
+      effect = "${nt_value.effect}"
+    },
+  %{ endfor ~}
+  ]
+  %{ endif ~}
+
   kubernetes_labels = {
     "node.kubernetes.io/role" = "${eng_name}"
   }
