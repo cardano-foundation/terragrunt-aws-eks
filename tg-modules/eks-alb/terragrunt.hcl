@@ -93,7 +93,7 @@ module "acm_request_certificate_${eks_region_k}_${eks_name}" {
   domain_name                       = substr(format("%s.%s", "$${local.uuid_domain_names["${local.config.general.env-short}.${eks_name}.${eks_region_k}"]}", "${local.config.network.route53.zones.default.tld}"), -64, -1)
   process_domain_validation_options = true
   ttl                               = "60"
-  subject_alternative_names         = [
+  subject_alternative_names         = distinct([
     "$${local.main_app_hostname}.${local.config.network.route53.zones.default.tld}",
     "*.$${local.main_app_hostname}.${local.config.network.route53.zones.default.tld}",
 
@@ -108,7 +108,7 @@ module "acm_request_certificate_${eks_region_k}_${eks_name}" {
 %{ for alb_hostname in try(local.config.network.alb.acm.extra-fqdn, { } ) ~}
     , "${alb_hostname}"
 %{ endfor ~}
-  ]
+  ])
 }
 
 module "alb_${eks_region_k}_${eks_name}" {
