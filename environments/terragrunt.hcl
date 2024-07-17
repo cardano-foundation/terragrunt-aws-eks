@@ -1,9 +1,11 @@
 dependencies {
   paths = [
     "../../tg-modules//tfstate",
+    "../../tg-modules//tfstate",
     "../../tg-modules//eks",
     "../../tg-modules//eks-helm-bootstrap",
     "../../tg-modules//eks-alb",
+    "../../tg-modules//kms",
     "../../tg-modules//route53"
   ]
 }
