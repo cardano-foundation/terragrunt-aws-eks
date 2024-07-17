@@ -16,30 +16,14 @@ default-exposed-ports: &default-exposed-ports
       - 0.0.0.0/0
 
 default-helm-charts: &default-helm-charts
-  traefik:
-    repository: https://traefik.github.io/charts
-    version: 23.0.1
+  cf-eks-baseline:
+    repository: https://cardano-foundation.github.io/cf-helm-charts/
+    version: 0.1.0
     namespace: kube-system
-    valuesSet:
-      deployment.kind: "DaemonSet"
-      ports.websecure.nodePort: "30443"
-      ports.web.exposed: "false"
-      ports.websecure.exposed: "false"
-      service.type: "NodePort"
-  external-secrets:
-    repository: https://charts.external-secrets.io
-    version: 0.8.3
-    namespace: external-secrets
-  metrics-server:
-    repository: https://kubernetes-sigs.github.io/metrics-server/
-    version: 3.10.0
 
 default-eks-addons: &default-eks-addons
-  aws-ebs-csi-driver:
-    addon-version: v1.18.0-eksbuild.1
-    resolve-conflicts: "OVERWRITE"
   coredns:
-    addon-version: v1.9.3-eksbuild.3
+    addon-version: v1.11.1-eksbuild.9
     resolve-conflicts: "OVERWRITE"
 
 # key here is a mere human-readable description/tag
@@ -60,7 +44,7 @@ eks:
       cluster-name-0:
         alb-dns-aliases: *default-alb-dns-aliases
         aws-auth-extra-roles: *default-aws-auth-extra-roles
-        k8s-version: 1.26
+        k8s-version: 1.30
         network:
           vpc: example-com
           subnet:
@@ -134,9 +118,9 @@ network:
         tld: "metadata.dev.cf-deployments.org"
   vpc:
     vpc-module-source: "cloudposse/vpc/aws"
-    vpc-module-version: "2.0.0"
+    vpc-module-version: "2.1.1"
     subnet-module-source: "cloudposse/dynamic-subnets/aws"
-    subnet-module-version: "2.1.0"
+    subnet-module-version: "2.4.2"
     regions:
       eu-west-1:
         example-com:
