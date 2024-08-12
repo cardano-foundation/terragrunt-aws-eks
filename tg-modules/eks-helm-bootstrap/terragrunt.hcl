@@ -55,6 +55,54 @@ provider "helm" {
 
 }
 
+provider "kubernetes" {
+  alias = "${eks_region_k}_${eks_name}"
+  host                   = jsondecode(var.eks_clusters_json).eks_cluster_${eks_region_k}_${eks_name}.eks_info.eks_cluster_endpoint
+  cluster_ca_certificate = base64decode(jsondecode(var.eks_clusters_json).eks_cluster_${eks_region_k}_${eks_name}.eks_info.eks_cluster_certificate_authority_data)
+  token                  = data.aws_eks_cluster_auth.eks_auth_${eks_region_k}_${eks_name}.token
+}
+
+data "template_file" "${eks_region_k}_${eks_name}_gp3_manifest" {
+  template = <<EOT
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  annotations:
+    storageclass.kubernetes.io/is-default-class: "true"
+  name: gp3
+parameters:
+  type: gp3
+provisioner: kubernetes.io/aws-ebs
+reclaimPolicy: Delete
+volumeBindingMode: WaitForFirstConsumer
+allowVolumeExpansion: true
+EOT
+}
+
+resource "kubernetes_manifest" "${eks_region_k}_${eks_name}_gp3" {
+  provider = kubernetes.${eks_region_k}_${eks_name}
+  manifest = yamldecode(data.template_file.${eks_region_k}_${eks_name}_gp3_manifest.rendered)
+}
+
+resource "kubernetes_annotations" "${eks_region_k}_${eks_name}_gp2_disable_default" {
+
+  provider = kubernetes.${eks_region_k}_${eks_name}
+  api_version = "storage.k8s.io/v1"
+  kind = "StorageClass"
+  metadata {
+    name = "gp2"
+  }
+  annotations = {
+    "storageclass.kubernetes.io/is-default-class" = "false"
+  }
+
+  depends_on = [kubernetes_manifest.${eks_region_k}_${eks_name}_gp3]
+
+  lifecycle {
+    ignore_changes = all
+  }
+}
+
     %{ for chart_k, chart_v in eks_values.helm-charts ~}
 
 data "template_file" "${eks_region_k}_${eks_name}_${chart_k}" {
