@@ -86,6 +86,8 @@ resource "kubernetes_manifest" "${eks_region_k}_${eks_name}_gp3" {
 
 resource "kubernetes_annotations" "${eks_region_k}_${eks_name}_gp2_disable_default" {
 
+  force = true
+
   provider = kubernetes.${eks_region_k}_${eks_name}
   api_version = "storage.k8s.io/v1"
   kind = "StorageClass"
