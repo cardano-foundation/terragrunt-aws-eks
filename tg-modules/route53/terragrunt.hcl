@@ -137,4 +137,9 @@ terraform {
 
   source = ".//."
 
+  before_hook "terraform_fmt" {
+    commands = ["apply", "plan", "destroy"]
+    execute  = ["terraform", "fmt", "-recursive"]
+  }
+
 }

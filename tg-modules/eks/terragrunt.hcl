@@ -58,8 +58,9 @@ generate "dynamic-eks-modules" {
   contents  = <<EOF
 
 locals {
-  env_short = "${ chomp(try(local.config.general.env-short, "dev")) }"
-  project = "${ chomp(try(local.config.general.project, "PROJECT_NAME")) }"
+  environment = "${ chomp(try(local.config.general.environment, "development", local.ENVIRONMENT_NAME)) }"
+  env_short   = "${ chomp(try(local.config.general.env-short, "dev")) }"
+  project     = "${ chomp(try(local.config.general.project, "PROJECT_NAME")) }"
 }
 
 %{ for eks_region_k, eks_region_v in try(local.config.eks.regions, { } ) ~}
@@ -94,19 +95,19 @@ module "eks_cluster_${eks_region_k}_${eks_name}" {
 
   source = "${ chomp(try(local.config.eks.cluster-module-source, "cloudposse/eks-cluster/aws")) }"
   %{ if try(regex("git::", local.config.eks.cluster-module-source), "") != "git::" }
-  version = "${ chomp(try(local.config.eks.cluster-module-version, "2.6.0")) }"
+  version = "${ chomp(try(local.config.eks.cluster-module-version, "4.4.1")) }"
   %{ endif ~}
   context = module.label_${eks_region_k}_${eks_name}.context
 
   region     = "${eks_region_k}"
-  vpc_id                     = jsondecode(var.vpcs_json).vpc_${eks_region_k}_${eks_values.network.vpc}.vpc_info.vpc_id
+
   %{ if eks_values.network.subnet.kind == "public" }
   subnet_ids                    = jsondecode(var.vpcs_json).vpc_${eks_region_k}_${eks_values.network.vpc}.subnets_info.subnet_${eks_region_k}_${eks_values.network.vpc}_${eks_values.network.subnet.name}.public_subnet_ids
   %{ else ~}
   subnet_ids                   = jsondecode(var.vpcs_json).vpc_${eks_region_k}_${eks_values.network.vpc}.subnets_info.subnet_${eks_region_k}_${eks_values.network.vpc}_${eks_values.network.subnet.name}.private_subnet_ids
   %{ endif ~}
 
-  kubernetes_version    = "${ chomp(try("${eks_values.k8s-version}", "1.26") ) }"
+  kubernetes_version    = "${ chomp(try("${eks_values.k8s-version}", "1.31") ) }"
   oidc_provider_enabled = true
   cluster_log_retention_period = "${ chomp(try("${eks_values.cluster-log-retention-period}", 7) ) }"
 
@@ -124,15 +125,15 @@ module "eks_cluster_${eks_region_k}_${eks_name}" {
 
   ]
 
-  map_additional_iam_roles = [
+  access_entry_map = {
   %{ for rolename in try(eks_values.aws-auth-extra-roles, [] ) ~}
-    {
-      rolearn = tolist(data.aws_iam_roles.aws_auth_extra_role_${eks_region_k}_${eks_name}_${ replace("${rolename}", "*", "wildcard")}.arns)[0]
-      username = "admins"
-      groups = ["system:masters"]
+    element(tolist(data.aws_iam_roles.aws_auth_extra_role_${eks_region_k}_${eks_name}_${ replace("${rolename}", "*", "wildcard")}.arns), 0) = {
+      access_policy_associations = {
+        ClusterAdmin = {}
+      }
     },
   %{ endfor ~}
-  ]
+  }
 
 }
 
@@ -150,9 +151,12 @@ module "node_group_label_${eks_region_k}_${eks_name}_${eng_name}" {
 
   stage      = ""
   namespace  = ""
-  name       = "${eng_name}"
+  name       = "$${local.env_short}-${eks_name}-${eng_name}-${eks_region_k}"
   delimiter  = "-"
-  attributes = ["eks-cluster=$${local.env_short}}-${eks_region_k}-${eks_name}"]
+  tags = {
+    "Environment" = "$${local.environment}",
+    "Project" = "$${local.project}"
+  }
 }
 
       %{ if try(eng_values.exposed-ports, "") != "" } 
@@ -165,7 +169,7 @@ module "eks_node_group_sg_${eks_region_k}_${eks_name}_${eng_name}" {
 
   source = "cloudposse/security-group/aws"
   version = "2.0.1"
-  #context = module.node_group_label_${eks_region_k}_${eks_name}_${eng_name}.context
+  context = module.node_group_label_${eks_region_k}_${eks_name}_${eng_name}.context
   name = "$${local.env_short}-${eks_name}-${eng_name}-${eks_region_k}"
 
   vpc_id     = jsondecode(var.vpcs_json).vpc_${eks_region_k}_${eks_values.network.vpc}.vpc_info.vpc_id
@@ -200,9 +204,9 @@ module "eks_node_group_${eks_region_k}_${eks_name}_${eng_name}" {
 
   source = "${ chomp(try(local.config.eks.node-group-module-source, "cloudposse/eks-node-group/aws")) }"
   %{ if try(regex("git::", local.config.eks.node-group-module-source), "") != "git::" }
-  version = "${ chomp(try(local.config.eks.node-group-module-version, "2.6.0")) }"
+  version = "${ chomp(try(local.config.eks.node-group-module-version, "3.1.1")) }"
   %{ endif ~}
-  #context = module.node_group_label_${eks_region_k}_${eks_name}_${eng_name}.context
+  context = module.node_group_label_${eks_region_k}_${eks_name}_${eng_name}.context
   name = "$${local.env_short}-${eks_name}-${eng_name}-${eks_region_k}"
 
   instance_types                     = [%{ for type in eng_values.instance-types ~} "${type}", %{ endfor ~}]
@@ -239,8 +243,6 @@ module "eks_node_group_${eks_region_k}_${eks_name}_${eng_name}" {
   # Enable the Kubernetes cluster auto-scaler to find the auto-scaling group
   cluster_autoscaler_enabled = ${ chomp(try("${eng_values.autoscaler-enabled}", false) ) } 
 
-  # Ensure the cluster is fully created before trying to add the node group
-  module_depends_on = module.eks_cluster_${eks_region_k}_${eks_name}.kubernetes_config_map_id
   create_before_destroy = true
 
   %{ if try(eng_values.block-device-mappings, "") != "" }
@@ -270,6 +272,11 @@ module "eks_node_group_${eks_region_k}_${eks_name}_${eng_name}" {
 
   kubernetes_labels = {
     "node.kubernetes.io/role" = "${eng_name}"
+  }
+
+  tags = {
+    "Environment" = "$${local.environment}",
+    "Project" = "$${local.project}"
   }
 
 }
@@ -387,9 +394,14 @@ terraform {
     }
   }
 
-  before_hook "before_hook" {
-    commands     = ["apply", "plan", "destroy"]
-    execute      = ["bash", "-c", "mkdir -p ~/.kube; touch ~/.kube/aws-config"]
+  before_hook "kubeconfig_output_prepare" {
+    commands = ["apply", "plan", "destroy"]
+    execute  = ["bash", "-c", "mkdir -p ~/.kube; touch ~/.kube/aws-config"]
+  }
+
+  before_hook "terraform_fmt" {
+    commands = ["apply", "plan", "destroy"]
+    execute  = ["terraform", "fmt", "-recursive"]
   }
 
   source = ".//."
