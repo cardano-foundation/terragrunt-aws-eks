@@ -209,7 +209,7 @@ module "eks_node_group_${eks_region_k}_${eks_name}_${eng_name}" {
 
   instance_types                     = [%{ for type in eng_values.instance-types ~} "${type}", %{ endfor ~}]
 
-  %{ if eks_values.network.subnet.kind == "public" }
+  %{ if eng_values.network.subnet.kind == "public" }
     %{ if try(eng_values.network.availability-zones, "") != "" }
   subnet_ids = [
       %{ for az in eng_values.network.availability-zones ~}
