@@ -101,11 +101,9 @@ module "eks_cluster_${eks_region_k}_${eks_name}" {
 
   region     = "${eks_region_k}"
 
-  %{ if eks_values.network.subnet.kind == "public" }
-  subnet_ids                    = jsondecode(var.vpcs_json).vpc_${eks_region_k}_${eks_values.network.vpc}.subnets_info.subnet_${eks_region_k}_${eks_values.network.vpc}_${eks_values.network.subnet.name}.public_subnet_ids
-  %{ else ~}
-  subnet_ids                   = jsondecode(var.vpcs_json).vpc_${eks_region_k}_${eks_values.network.vpc}.subnets_info.subnet_${eks_region_k}_${eks_values.network.vpc}_${eks_values.network.subnet.name}.private_subnet_ids
-  %{ endif ~}
+  %{ for subnet in try(eks_values.network.subnets, []) ~}
+  subnet_ids                 = jsondecode(var.vpcs_json).vpc_${eks_region_k}_${eks_values.network.vpc}.subnets_info.subnet_${eks_region_k}_${eks_values.network.vpc}_${subnet.name}.${subnet.kind}_subnet_ids
+  %{ endfor ~}
 
   kubernetes_version    = "${ chomp(try("${eks_values.k8s-version}", "1.31") ) }"
   oidc_provider_enabled = true
