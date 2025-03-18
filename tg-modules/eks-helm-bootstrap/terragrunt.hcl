@@ -47,8 +47,8 @@ data "aws_eks_cluster_auth" "eks_auth_${eks_region_k}_${eks_name}" {
 provider "helm" {
   alias = "${eks_region_k}_${eks_name}"
 
-  repository_config_path = "${path.module}/.helm/repositories.yaml" 
-  repository_cache       = "${path.module}/.helm"
+  repository_config_path = "$${path.module}/.helm/repositories.yaml"
+  repository_cache       = "$${path.module}/.helm"
 
   kubernetes {
     host                   = jsondecode(var.eks_clusters_json).eks_cluster_${eks_region_k}_${eks_name}.eks_info.eks_cluster_endpoint
