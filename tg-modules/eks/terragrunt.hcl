@@ -101,9 +101,11 @@ module "eks_cluster_${eks_region_k}_${eks_name}" {
 
   region     = "${eks_region_k}"
 
+  subnet_ids = concat(
   %{ for subnet in try(eks_values.network.subnets, []) ~}
-  subnet_ids                 = jsondecode(var.vpcs_json).vpc_${eks_region_k}_${eks_values.network.vpc}.subnets_info.subnet_${eks_region_k}_${eks_values.network.vpc}_${subnet.name}.${subnet.kind}_subnet_ids
+    jsondecode(var.vpcs_json).vpc_${eks_region_k}_${eks_values.network.vpc}.subnets_info.subnet_${eks_region_k}_${eks_values.network.vpc}_${subnet.name}.${subnet.kind}_subnet_ids,
   %{ endfor ~}
+  )
 
   kubernetes_version    = "${ chomp(try("${eks_values.k8s-version}", "1.31") ) }"
   oidc_provider_enabled = true
@@ -213,21 +215,21 @@ module "eks_node_group_${eks_region_k}_${eks_name}_${eng_name}" {
     %{ if try(eng_values.network.availability-zones, "") != "" }
   subnet_ids = [
       %{ for az in eng_values.network.availability-zones ~}
-    element(jsondecode(var.vpcs_json).vpc_${eks_region_k}_${eks_values.network.vpc}.subnets_info.subnet_${eks_region_k}_${eks_values.network.vpc}_${eks_values.network.subnet.name}.az_public_subnets_map["${eks_region_k}${az}"], 0),
+    element(jsondecode(var.vpcs_json).vpc_${eks_region_k}_${eks_values.network.vpc}.subnets_info.subnet_${eks_region_k}_${eks_values.network.vpc}_${eng_values.network.subnet.name}.az_public_subnets_map["${eks_region_k}${az}"], 0),
       %{ endfor ~}
   ]
     %{ else ~}
-  subnet_ids                         = jsondecode(var.vpcs_json).vpc_${eks_region_k}_${eks_values.network.vpc}.subnets_info.subnet_${eks_region_k}_${eks_values.network.vpc}_${eks_values.network.subnet.name}.public_subnet_ids
+  subnet_ids                         = jsondecode(var.vpcs_json).vpc_${eks_region_k}_${eks_values.network.vpc}.subnets_info.subnet_${eks_region_k}_${eks_values.network.vpc}_${eng_values.network.subnet.name}.public_subnet_ids
     %{ endif ~}
   %{ else ~}
     %{ if try(eng_values.network.availability-zones, "") != "" }
   subnet_ids = [
       %{ for az in eng_values.network.availability-zones ~}
-    element(jsondecode(var.vpcs_json).vpc_${eks_region_k}_${eks_values.network.vpc}.subnets_info.subnet_${eks_region_k}_${eks_values.network.vpc}_${eks_values.network.subnet.name}.az_private_subnets_map["${eks_region_}${az}"], 0),
+    element(jsondecode(var.vpcs_json).vpc_${eks_region_k}_${eks_values.network.vpc}.subnets_info.subnet_${eks_region_k}_${eks_values.network.vpc}_${eng_values.network.subnet.name}.az_private_subnets_map["${eks_region_k}${az}"], 0),
       %{ endfor ~}
   ]
     %{ else ~}
-  subnet_ids                         = jsondecode(var.vpcs_json).vpc_${eks_region_k}_${eks_values.network.vpc}.subnets_info.subnet_${eks_region_k}_${eks_values.network.vpc}_${eks_values.network.subnet.name}.private_subnet_ids
+  subnet_ids                         = jsondecode(var.vpcs_json).vpc_${eks_region_k}_${eks_values.network.vpc}.subnets_info.subnet_${eks_region_k}_${eks_values.network.vpc}_${eng_values.network.subnet.name}.private_subnet_ids
     %{ endif ~}
   %{ endif ~}
 
