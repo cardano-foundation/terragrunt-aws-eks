@@ -109,7 +109,19 @@ module "eks_cluster_${eks_region_k}_${eks_name}" {
 
   kubernetes_version    = "${ chomp(try("${eks_values.k8s-version}", "1.31") ) }"
   oidc_provider_enabled = true
+  endpoint_private_access = "${ chomp(try("${eks_values.endpoint-private-access}", true) ) }"
+  endpoint_public_access = "${ chomp(try("${eks_values.endpoint-public-access}", false) ) }"
   cluster_log_retention_period = "${ chomp(try("${eks_values.cluster-log-retention-period}", 7) ) }"
+  public_access_cidrs = concat(
+  %{ for cidr in try(eks_values.public-access-cidrs, ["0.0.0.0/0"]) ~}
+    ["${cidr}"], 
+  %{ endfor ~}
+  )
+  allowed_cidr_blocks = concat(
+  %{ for cidr in try(eks_values.public-access-cidrs, ["0.0.0.0/0"]) ~}
+    ["${cidr}"], 
+  %{ endfor ~}
+  )
 
   addons = [ 
     %{ if try(eks_values.addons, "") != "" }
