@@ -135,9 +135,7 @@ resource "kubernetes_annotations" "${eks_region_k}_${eks_name}_gp2_disable_defau
 data "template_file" "${eks_region_k}_${eks_name}_${chart_k}" {
   template = <<EOT
       %{if try(chart_v.valuesYAMLTemplate, "") != "" ~}
-        %{for v1_k, v1_v in chart_v.valuesYAMLTemplate ~}
-${v1_k}: ${v1_v}
-        %{ endfor ~}
+${indent(0, yamlencode(chart_v.valuesYAMLTemplate))}
       %{ endif ~}
 EOT
   vars = {
@@ -164,10 +162,13 @@ resource "helm_release" "${eks_region_k}_${eks_name}_${chart_k}" {
     %{ endfor ~}
   %{ endif ~}
 
-  values = [<<EOT
-$${data.template_file.${eks_region_k}_${eks_name}_${chart_k}.rendered}
-EOT
-  ]
+  #  values = [<<EOT
+  #$${data.template_file.${eks_region_k}_${eks_name}_${chart_k}.rendered}
+  #EOT
+  #  ]
+
+
+  values = [trimspace(data.template_file.${eks_region_k}_${eks_name}_${chart_k}.rendered)]
 
 }
 
