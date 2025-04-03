@@ -44,7 +44,7 @@ module "subnet_${vpc_region_k}_${vpc_name}_${sn_name}" {
   }
 
   source = "${ chomp(try(local.config.network.vpc.subnet-module-source, "cloudposse/dynamic-subnets/aws")) }"
-  version = "${ chomp(try(local.config.network.vpc.subnet-module-version, "2.0.4")) }"
+  version = "${ chomp(try(local.config.network.vpc.subnet-module-version, "2.4.2")) }"
   vpc_id             = module.vpc_${vpc_region_k}_${vpc_name}.vpc_id
   igw_id             = [module.vpc_${vpc_region_k}_${vpc_name}.igw_id]
   namespace           = ""
@@ -54,6 +54,8 @@ module "subnet_${vpc_region_k}_${vpc_name}_${sn_name}" {
   private_subnets_enabled = ${sn_values.private_subnets_enabled}
   public_subnets_enabled = ${sn_values.public_subnets_enabled}
   public_route_table_enabled = ${sn_values.igw}
+  private_route_table_enabled = ${sn_values.igw}
+  ipv6_egress_only_igw_id = [module.vpc_${vpc_region_k}_${vpc_name}.igw_id]
   nat_gateway_enabled = ${sn_values.ngw}
   availability_zones  = [ %{ for az_name in sn_values.availability-zones ~} "${az_name}", %{ endfor ~} ]
 
@@ -66,6 +68,8 @@ module "subnet_${vpc_region_k}_${vpc_name}_${sn_name}" {
   }
 
 }
+
+      %{ endif ~}
 
     %{ endfor ~}
 
