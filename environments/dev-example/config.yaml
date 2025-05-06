@@ -23,7 +23,7 @@ default-helm-charts: &default-helm-charts
 
 default-eks-addons: &default-eks-addons
   coredns:
-    addon-version: v1.11.1-eksbuild.9
+    addon-version: v1.11.4-eksbuild.2
     resolve-conflicts: "OVERWRITE"
 
 # key here is a mere human-readable description/tag
@@ -36,9 +36,9 @@ alb-dns-aliases: &default-alb-dns-aliases
 
 eks:
   cluster-module-source: cloudposse/eks-cluster/aws
-  cluster-module-version: 2.6.0
+  cluster-module-version: 4.6.0
   node-group-module-source: cloudposse/eks-node-group/aws
-  node-group-module-version: 2.6.0
+  node-group-module-version: 3.3.0
   regions:
     eu-west-1:
       cluster-name-0:
@@ -47,9 +47,11 @@ eks:
         k8s-version: 1.30
         network:
           vpc: example-com
-          subnet:
-            name: default
-            kind: public
+          subnets:
+            - name: default
+              kind: public
+            - name: default
+              kind: private
         addons:
           <<: *default-eks-addons
         helm-charts:
@@ -58,7 +60,13 @@ eks:
         # https://github.com/terraform-aws-modules/terraform-aws-eks/issues/2032  
         # potential fix: use our own launch templates
         node-groups:
-          worker-group-0:
+          public:
+            network:
+              subnet:
+                name: default
+                kind: public
+              availability-zones:
+                - b
             desired-size: 1
             min-size: 1
             max-size: 3
@@ -76,7 +84,13 @@ eks:
               <<: *default-exposed-ports
             extra-iam-policies:
               <<: *default-iam-policies
-          non-exposed:
+          private:
+            network:
+              subnet:
+                name: default
+                kind: private
+              availability-zones:
+                - b
             desired-size: 1
             min-size: 1
             max-size: 3
@@ -115,7 +129,7 @@ network:
   route53:
     zones:
       default:
-        tld: "metadata.dev.cf-deployments.org"
+        tld: "example.com"
   vpc:
     vpc-module-source: "cloudposse/vpc/aws"
     vpc-module-version: "2.1.1"
@@ -131,7 +145,7 @@ network:
               private_subnets_enabled: true
               public_subnets_enabled: true
               igw: true
-              ngw: false
+              ngw: true
               availability-zones:
               - eu-west-1a
               - eu-west-1b
