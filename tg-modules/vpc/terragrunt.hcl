@@ -69,8 +69,6 @@ module "subnet_${vpc_region_k}_${vpc_name}_${sn_name}" {
 
 }
 
-      %{ endif ~}
-
     %{ endfor ~}
 
   %{ endfor ~}
