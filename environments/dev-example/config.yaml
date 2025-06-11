@@ -15,6 +15,9 @@ default-exposed-ports: &default-exposed-ports
     cidr-filters:
       - 0.0.0.0/0
 
+default-eks-public-access-cidrs: &default-eks-public-access-cidrs
+  basti0n: 127.0.0.0/32
+
 default-helm-charts: &default-helm-charts
   cf-eks-baseline:
     repository: https://cardano-foundation.github.io/cf-helm-charts/
@@ -45,8 +48,12 @@ eks:
         alb-dns-aliases: *default-alb-dns-aliases
         aws-auth-extra-roles: *default-aws-auth-extra-roles
         k8s-version: 1.30
+        public-access-cidrs: # this is used for kube api
+          <<: *default-eks-public-access-cidrs
         network:
           vpc: example-com
+          allowed-cidr-blocks: # this is used for an special sg which allow full access to all the ports
+            <<: *default-eks-public-access-cidrs
           subnets:
             - name: default
               kind: public
@@ -100,7 +107,7 @@ eks:
       cluster-name-1:
         alb-dns-aliases: *default-alb-dns-aliases
         aws-auth-extra-roles: *default-aws-auth-extra-roles
-        k8s-version: 1.26
+        k8s-version: 1.33
         network:
           vpc: example-com
           subnet:
@@ -118,6 +125,7 @@ eks:
             desired-size: 1
             min-size: 1
             max-size: 10
+            ami-type: AL2023_x86_64_STANDARD
             instance-types:
               - t3a.medium
             autoscaler-enabled: false

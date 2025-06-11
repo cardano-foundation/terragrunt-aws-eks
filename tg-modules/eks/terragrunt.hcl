@@ -112,16 +112,22 @@ module "eks_cluster_${eks_region_k}_${eks_name}" {
   endpoint_private_access = "${ chomp(try("${eks_values.endpoint-private-access}", true) ) }"
   endpoint_public_access = "${ chomp(try("${eks_values.endpoint-public-access}", false) ) }"
   cluster_log_retention_period = "${ chomp(try("${eks_values.cluster-log-retention-period}", 7) ) }"
+
+  %{ if try(eks_values.public-access-cidrs, "") != "" }
   public_access_cidrs = concat(
-  %{ for cidr in try(eks_values.public-access-cidrs, ["0.0.0.0/0"]) ~}
-    ["${cidr}"], 
-  %{ endfor ~}
+    %{ for cird_name, cidr_value in eks_values.public-access-cidrs ~}
+    ["${cidr_value}"],
+    %{ endfor ~}
   )
+  %{ endif ~}
+
+  %{ if try(eks_values.network.allowed-cidr-blocks, "") != "" }
   allowed_cidr_blocks = concat(
-  %{ for cidr in try(eks_values.public-access-cidrs, ["0.0.0.0/0"]) ~}
-    ["${cidr}"], 
-  %{ endfor ~}
+    %{ for cird_name, cidr_value in eks_values.network.allowed-cidr-blocks ~}
+    ["${cidr_value}"],
+    %{ endfor ~}
   )
+  %{ endif ~}
 
   addons = [ 
     %{ if try(eks_values.addons, "") != "" }
@@ -221,7 +227,8 @@ module "eks_node_group_${eks_region_k}_${eks_name}_${eng_name}" {
   context = module.node_group_label_${eks_region_k}_${eks_name}_${eng_name}.context
   name = "$${local.env_short}-${eks_name}-${eng_name}-${eks_region_k}"
 
-  instance_types                     = [%{ for type in eng_values.instance-types ~} "${type}", %{ endfor ~}]
+  instance_types = [%{ for type in eng_values.instance-types ~} "${type}", %{ endfor ~}]
+  ami_type       = "${ chomp(try("${eng_values.ami-type}", "AL2_x86_64")) }"
 
   %{ if eng_values.network.subnet.kind == "public" }
     %{ if try(eng_values.network.availability-zones, "") != "" }
