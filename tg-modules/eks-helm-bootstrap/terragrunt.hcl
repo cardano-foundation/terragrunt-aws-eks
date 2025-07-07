@@ -50,7 +50,7 @@ provider "helm" {
   repository_config_path = "$${path.module}/.helm/repositories.yaml"
   repository_cache       = "$${path.module}/.helm"
 
-  kubernetes {
+  kubernetes = {
     host                   = jsondecode(var.eks_clusters_json).eks_cluster_${eks_region_k}_${eks_name}.eks_info.eks_cluster_endpoint
     cluster_ca_certificate = base64decode(jsondecode(var.eks_clusters_json).eks_cluster_${eks_region_k}_${eks_name}.eks_info.eks_cluster_certificate_authority_data)
     token                  = data.aws_eks_cluster_auth.eks_auth_${eks_region_k}_${eks_name}.token
