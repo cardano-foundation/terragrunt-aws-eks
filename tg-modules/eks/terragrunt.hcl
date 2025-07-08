@@ -290,7 +290,11 @@ module "eks_node_group_${eks_region_k}_${eks_name}_${eng_name}" {
   %{ endif ~}
 
   kubernetes_labels = {
+    %{ if try(eng_values.node-kubernetes-io-role, "") != "" }
+    "node.kubernetes.io/role" = "${eng_values.kubernetes-role}"
+    %{ else }
     "node.kubernetes.io/role" = "${eng_name}"
+    %{ endif ~}
   }
 
   tags = {
