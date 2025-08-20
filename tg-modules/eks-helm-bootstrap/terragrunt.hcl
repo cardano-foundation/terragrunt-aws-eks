@@ -134,7 +134,7 @@ resource "kubernetes_annotations" "${eks_region_k}_${eks_name}_gp2_disable_defau
 
 data "template_file" "${eks_region_k}_${eks_name}_${chart_k}" {
   template = <<EOT
-      %{if try(chart_v.valuesYAMLTemplate, "") != "" ~}
+      %{if try(chart_v.valuesYAMLTemplate, "") != "" }
 ${indent(0, yamlencode(chart_v.valuesYAMLTemplate))}
       %{ endif ~}
 EOT
