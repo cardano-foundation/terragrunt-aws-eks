@@ -152,6 +152,9 @@ resource "helm_release" "${eks_region_k}_${eks_name}_${chart_k}" {
   create_namespace = true
   chart      = "${chart_k}"
   name       = "${chart_k}"
+  %{ if try(chart_v.version, "") != "" }
+  version   = "${chart_v.version}"
+  %{ endif ~}
 
   %{if try(chart_v.valuesSet, "") != "" ~}
     %{for set_k, set_v in chart_v.valuesSet ~}
