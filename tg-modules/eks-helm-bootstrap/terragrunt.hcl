@@ -165,10 +165,7 @@ resource "helm_release" "${eks_region_k}_${eks_name}_${chart_k}" {
     %{ endfor ~}
   %{ endif ~}
 
-  values = [<<EOT
-$${data.template_file.${eks_region_k}_${eks_name}_${chart_k}.rendered}
-EOT
-  ]
+  values = [trimspace(data.template_file.${eks_region_k}_${eks_name}_${chart_k}.rendered)]
 
 }
 
