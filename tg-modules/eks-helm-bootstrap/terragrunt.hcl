@@ -158,10 +158,10 @@ resource "helm_release" "${eks_region_k}_${eks_name}_${chart_k}" {
 
   %{if try(chart_v.valuesSet, "") != "" ~}
     %{for set_k, set_v in chart_v.valuesSet ~}
-  set {
+  set = [{
     name  = "${set_k}"
     value = "${set_v}"
-  }
+  }]
     %{ endfor ~}
   %{ endif ~}
 
