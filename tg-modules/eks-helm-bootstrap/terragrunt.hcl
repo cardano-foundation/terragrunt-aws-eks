@@ -157,12 +157,14 @@ resource "helm_release" "${eks_region_k}_${eks_name}_${chart_k}" {
   %{ endif ~}
 
   %{if try(chart_v.valuesSet, "") != "" ~}
+  set = [
     %{for set_k, set_v in chart_v.valuesSet ~}
-  set {
-    name  = "${set_k}"
-    value = "${set_v}"
-  }
+    {
+      name  = "${set_k}"
+      value = "${set_v}"
+    },
     %{ endfor ~}
+  ]
   %{ endif ~}
 
   values = [trimspace(data.template_file.${eks_region_k}_${eks_name}_${chart_k}.rendered)]
