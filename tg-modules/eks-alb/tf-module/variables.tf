@@ -98,6 +98,11 @@ variable "node_port_protocol" {
   description = "NodePort protocol value"
 }
 
+variable "node_port_protocol_version" {
+  default     = "HTTP1"
+  description = "NodePort protocol version value"
+}
+
 variable "certificate_arn" {
   default     = ""
   description = "Required if https is enabled"

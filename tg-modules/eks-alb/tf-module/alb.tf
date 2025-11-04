@@ -24,6 +24,7 @@ resource "aws_alb_target_group" "main" {
   name_prefix = local.alb_name_prefix
   port        = var.node_port
   protocol    = var.node_port_protocol
+  protocol_version = var.node_port_protocol_version
   target_type = var.target_type
   vpc_id      = var.vpcid
 
