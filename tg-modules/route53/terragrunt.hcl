@@ -59,7 +59,7 @@ resource "aws_route53_record" "eks_${eks_region_k}_${eks_name}" {
   records = [try(jsondecode(var.eks_alb_json).eks_alb_${eks_region_k}_${eks_name}.alb_info.dns_name, "known-after-apply")]
 }
 
-      %{ for hostname in try(eks_values.alb-dns-aliases, [] ) ~}
+      %{ for hostname in try(eks_values.alb.dns-aliases, [] ) ~}
 
 resource "aws_route53_record" "eks_${eks_region_k}_${eks_name}_${ replace("${hostname}", ".", "_")}" {
   zone_id = data.aws_route53_zone.service_zone.zone_id

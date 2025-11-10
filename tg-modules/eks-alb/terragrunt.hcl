@@ -145,13 +145,14 @@ module "alb_${eks_region_k}_${eks_name}" {
     %{ endfor ~}
   ] )
   tags                      = {}
-  node_port                 = 30443
-  node_port_protocol        = "HTTPS"
-  enable_http               = true
-  enable_https              = true
-  http_redirect             = true
+  node_port                 = ${ chomp(try(eks_values.alb.node-port, 30443)) }
+  node_port_protocol        = "${ chomp(try(eks_values.alb.node-port-protocol, "HTTPS")) }"
+  node_port_protocol_version = "${ chomp(try(eks_values.alb.node-port-protocol-version, "HTTP1")) }"
+  enable_http               = ${ chomp(try(eks_values.alb.enable-http, true)) }
+  enable_https              = ${ chomp(try(eks_values.alb.enable-https, true)) }
+  http_redirect             = ${ chomp(try(eks_values.alb.http-redirect, true)) }
   certificate_arn           = module.acm_request_certificate_${eks_region_k}_${eks_name}.arn
-  internal                  = false
+  internal                  = ${ chomp(try(eks_values.alb.internal, false)) }
 
 }
 
