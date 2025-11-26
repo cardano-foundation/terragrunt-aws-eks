@@ -28,10 +28,17 @@ default-eks-addons: &default-eks-addons
   coredns:
     addon-version: v1.11.4-eksbuild.2
     resolve-conflicts: "OVERWRITE"
+  vpc-cni:
+    addon-version: v1.20.4-eksbuild.2
+    resolve-conflicts: "OVERWRITE"
+    env:
+      ENABLE_PREFIX_DELEGATION: "true"
 
 # key here is a mere human-readable description/tag
 default-iam-policies: &default-iam-policies
   enable-ebs-creation: "arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy"
+  enable-efs-creation: "arn:aws:iam::aws:policy/service-role/AmazonEFSCSIDriverPolicy"
+  enable-ssm-access: "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
 
 alb-dns-aliases: &default-alb-dns-aliases
   - api
@@ -77,6 +84,8 @@ eks:
             desired-size: 1
             min-size: 1
             max-size: 3
+            # NOTE: 110 is kubernetes' default, in aws, we require ENABLE_PREFIX_DELEGATION=true for vpc-cni addon
+            # max-pods: 110
             block-device-mappings:
               xvda:
                 volume-size: 40 # gbs
