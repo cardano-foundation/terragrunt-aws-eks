@@ -137,6 +137,15 @@ module "eks_cluster_${eks_region_k}_${eks_name}" {
         addon_version = "${addon_v.addon-version}",
         %{ if try(addon_v.resolve-conflicts, "") != "" } resolve_conflicts = "${addon_v.resolve-conflicts}", %{ else } resolve_conflicts = "PRESERVE", %{ endif ~}
         %{ if try(addon_v.service-account-role-arn, "") != "" } service_account_role_arn = "${addon_v.service-account-role-arn}", %{ else } service_account_role_arn = null %{ endif ~}
+        %{ if try(addon_v.env, "") != "" }
+        configuration_values = jsonencode({
+          env = {
+            %{ for env_k, env_v in addon_v.env ~}
+            ${env_k} = "${env_v}"
+            %{ endfor ~}
+          }
+        })
+        %{ endif ~}
      },
       %{ endfor ~}
     %{ endif ~}
@@ -303,6 +312,34 @@ module "eks_node_group_${eks_region_k}_${eks_name}_${eng_name}" {
   }
 
 }
+      %{ if try(eng_values.max-pods, "") != "" }
+# NOTE: this requires arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore to be attached to the node group role
+# Create an aws_ssm_association that executes a script that will set --max-pods for kubelet
+resource "aws_ssm_association" "set_max_pods_${eks_region_k}_${eks_name}_${eng_name}" {
+  name = "AWS-RunShellScript"
+
+  targets {
+    key    = "tag:eks:nodegroup-name"
+    values = [split(":", module.eks_node_group_${eks_region_k}_${eks_name}_${eng_name}.eks_node_group_id)[1]]
+  }
+
+  parameters = {
+    commands = <<-EOC
+      #!/bin/bash
+      MAX_PODS=${eng_values.max-pods}
+      KUBELET_ENV_FILE=/etc/eks/kubelet/environment
+      grep -q "^NODEADM_KUBELET_ARGS=.*max-pods=$MAX_PODS" $KUBELET_ENV_FILE && exit 0
+      sed -i "s|^NODEADM_KUBELET_ARGS=|NODEADM_KUBELET_ARGS=--max-pods=$MAX_PODS |" $KUBELET_ENV_FILE
+      systemctl daemon-reload
+      systemctl restart kubelet
+EOC
+  }
+  # optional: only run once
+  max_concurrency = "100%"
+  max_errors      = "0"
+}
+      %{ endif ~}
+
 
 resource "aws_iam_role_policy_attachment" "alb_ingress_policy_${eks_region_k}_${eks_name}_${eng_name}" {
   policy_arn = aws_iam_policy.aws_alb_policy.arn
