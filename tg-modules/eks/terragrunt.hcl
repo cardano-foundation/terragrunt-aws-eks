@@ -238,6 +238,7 @@ module "eks_node_group_${eks_region_k}_${eks_name}_${eng_name}" {
 
   instance_types = [%{ for type in eng_values.instance-types ~} "${type}", %{ endfor ~}]
   ami_type       = "${ chomp(try("${eng_values.ami-type}", "AL2_x86_64")) }"
+  node_repair_enabled = ${ chomp(try("${eng_values.node-repair-enabled}", false) ) }
 
   %{ if eng_values.network.subnet.kind == "public" }
     %{ if try(eng_values.network.availability-zones, "") != "" }
