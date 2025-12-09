@@ -130,6 +130,24 @@ resource "kubernetes_manifest" "${eks_region_k}_${eks_name}_gp3_encrypted_csi" {
   manifest = yamldecode(data.template_file.${eks_region_k}_${eks_name}_gp3_encrypted_csi_manifest.rendered)
 }
 
+%{ if contains(keys(eks_values.addons), "snapshot-controller") }
+data "template_file" "${eks_region_k}_${eks_name}_ebs_csi_aws_vsc_manifest" {
+  template = <<EOT
+apiVersion: snapshot.storage.k8s.io/v1
+kind: VolumeSnapshotClass
+metadata:
+  name: csi-aws-vsc
+driver: ebs.csi.aws.com
+deletionPolicy: Delete
+EOT
+}
+
+resource "kubernetes_manifest" "${eks_region_k}_${eks_name}_ebs_csi_aws_vsc" {
+  provider = kubernetes.${eks_region_k}_${eks_name}
+  manifest = yamldecode(data.template_file.${eks_region_k}_${eks_name}_ebs_csi_aws_vsc_manifest.rendered)
+}
+%{ endif }
+
 resource "kubernetes_annotations" "${eks_region_k}_${eks_name}_gp2_disable_default" {
 
   force = true
