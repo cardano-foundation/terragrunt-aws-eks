@@ -70,8 +70,6 @@ data "template_file" "${eks_region_k}_${eks_name}_gp3_encrypted_manifest" {
 apiVersion: storage.k8s.io/v1
 kind: StorageClass
 metadata:
-  annotations:
-    storageclass.kubernetes.io/is-default-class: "true"
   name: gp3-encrypted
 parameters:
   type: gp3
@@ -99,6 +97,24 @@ allowVolumeExpansion: true
 EOT
 }
 
+data "template_file" "${eks_region_k}_${eks_name}_gp3_encrypted_csi_manifest" {
+  template = <<EOT
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  annotations:
+    storageclass.kubernetes.io/is-default-class: "true"
+  name: gp3-encrypted-csi
+parameters:
+  type: gp3
+  encrypted: "true"
+provisioner: ebs.csi.aws.com
+reclaimPolicy: Delete
+volumeBindingMode: WaitForFirstConsumer
+allowVolumeExpansion: true
+EOT
+}
+
 resource "kubernetes_manifest" "${eks_region_k}_${eks_name}_gp3" {
   provider = kubernetes.${eks_region_k}_${eks_name}
   manifest = yamldecode(data.template_file.${eks_region_k}_${eks_name}_gp3_manifest.rendered)
@@ -107,6 +123,11 @@ resource "kubernetes_manifest" "${eks_region_k}_${eks_name}_gp3" {
 resource "kubernetes_manifest" "${eks_region_k}_${eks_name}_gp3_encrypted" {
   provider = kubernetes.${eks_region_k}_${eks_name}
   manifest = yamldecode(data.template_file.${eks_region_k}_${eks_name}_gp3_encrypted_manifest.rendered)
+}
+
+resource "kubernetes_manifest" "${eks_region_k}_${eks_name}_gp3_encrypted_csi" {
+  provider = kubernetes.${eks_region_k}_${eks_name}
+  manifest = yamldecode(data.template_file.${eks_region_k}_${eks_name}_gp3_encrypted_csi_manifest.rendered)
 }
 
 resource "kubernetes_annotations" "${eks_region_k}_${eks_name}_gp2_disable_default" {
