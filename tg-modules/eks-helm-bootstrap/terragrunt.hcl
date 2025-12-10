@@ -70,8 +70,6 @@ data "template_file" "${eks_region_k}_${eks_name}_gp3_encrypted_manifest" {
 apiVersion: storage.k8s.io/v1
 kind: StorageClass
 metadata:
-  annotations:
-    storageclass.kubernetes.io/is-default-class: "true"
   name: gp3-encrypted
 parameters:
   type: gp3
@@ -99,6 +97,24 @@ allowVolumeExpansion: true
 EOT
 }
 
+data "template_file" "${eks_region_k}_${eks_name}_gp3_encrypted_csi_manifest" {
+  template = <<EOT
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  annotations:
+    storageclass.kubernetes.io/is-default-class: "true"
+  name: gp3-encrypted-csi
+parameters:
+  type: gp3
+  encrypted: "true"
+provisioner: ebs.csi.aws.com
+reclaimPolicy: Delete
+volumeBindingMode: WaitForFirstConsumer
+allowVolumeExpansion: true
+EOT
+}
+
 resource "kubernetes_manifest" "${eks_region_k}_${eks_name}_gp3" {
   provider = kubernetes.${eks_region_k}_${eks_name}
   manifest = yamldecode(data.template_file.${eks_region_k}_${eks_name}_gp3_manifest.rendered)
@@ -108,6 +124,48 @@ resource "kubernetes_manifest" "${eks_region_k}_${eks_name}_gp3_encrypted" {
   provider = kubernetes.${eks_region_k}_${eks_name}
   manifest = yamldecode(data.template_file.${eks_region_k}_${eks_name}_gp3_encrypted_manifest.rendered)
 }
+
+resource "kubernetes_manifest" "${eks_region_k}_${eks_name}_gp3_encrypted_csi" {
+  provider = kubernetes.${eks_region_k}_${eks_name}
+  manifest = yamldecode(data.template_file.${eks_region_k}_${eks_name}_gp3_encrypted_csi_manifest.rendered)
+}
+
+%{ if contains(keys(eks_values.addons), "snapshot-controller") }
+data "template_file" "${eks_region_k}_${eks_name}_ebs_csi_aws_vsc_manifest" {
+  template = <<EOT
+apiVersion: snapshot.storage.k8s.io/v1
+kind: VolumeSnapshotClass
+metadata:
+  name: ebs-csi-aws
+driver: ebs.csi.aws.com
+deletionPolicy: Delete
+EOT
+}
+
+resource "kubernetes_manifest" "${eks_region_k}_${eks_name}_ebs_csi_aws_vsc" {
+  provider = kubernetes.${eks_region_k}_${eks_name}
+  manifest = yamldecode(data.template_file.${eks_region_k}_${eks_name}_ebs_csi_aws_vsc_manifest.rendered)
+}
+
+data "template_file" "${eks_region_k}_${eks_name}_snapshot_quota_manifest" {
+  template = <<EOT
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: snapshots
+  namespace: default
+spec:
+  hard:
+    count/volumesnapshots.snapshot.storage.k8s.io: "${ try(eks_values.resourceQuotas.countVolumeSnapshots, 50)}"
+EOT
+}
+
+resource "kubernetes_manifest" "${eks_region_k}_${eks_name}_snapshot_quota" {
+  provider = kubernetes.${eks_region_k}_${eks_name}
+  manifest = yamldecode(data.template_file.${eks_region_k}_${eks_name}_snapshot_quota_manifest.rendered)
+}
+    
+%{ endif }
 
 resource "kubernetes_annotations" "${eks_region_k}_${eks_name}_gp2_disable_default" {
 

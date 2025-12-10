@@ -57,6 +57,8 @@ eks:
         k8s-version: 1.30
         public-access-cidrs: # this is used for kube api
           <<: *default-eks-public-access-cidrs
+        resourceQuotas:
+          countVolumeSnapshots: 50
         network:
           vpc: example-com
           allowed-cidr-blocks: # this is used for an special sg which allow full access to all the ports
