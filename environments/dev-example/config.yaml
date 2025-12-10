@@ -88,6 +88,9 @@ eks:
             max-size: 3
             # NOTE: 110 is kubernetes' default, in aws, we require ENABLE_PREFIX_DELEGATION=true for vpc-cni addon
             # max-pods: 110
+            swap:
+              enabled: true
+              size: 4 # gbs
             block-device-mappings:
               xvda:
                 volume-size: 40 # gbs
