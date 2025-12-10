@@ -136,7 +136,7 @@ data "template_file" "${eks_region_k}_${eks_name}_ebs_csi_aws_vsc_manifest" {
 apiVersion: snapshot.storage.k8s.io/v1
 kind: VolumeSnapshotClass
 metadata:
-  name: csi-aws-vsc
+  name: ebs-csi-aws
 driver: ebs.csi.aws.com
 deletionPolicy: Delete
 EOT
@@ -146,6 +146,25 @@ resource "kubernetes_manifest" "${eks_region_k}_${eks_name}_ebs_csi_aws_vsc" {
   provider = kubernetes.${eks_region_k}_${eks_name}
   manifest = yamldecode(data.template_file.${eks_region_k}_${eks_name}_ebs_csi_aws_vsc_manifest.rendered)
 }
+
+data "template_file" "${eks_region_k}_${eks_name}_snapshot_quota_manifest" {
+  template = <<EOT
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: snapshots
+  namespace: default
+spec:
+  hard:
+    count/volumesnapshots.snapshot.storage.k8s.io: "${ try(eks_values.resourceQuotas.countVolumeSnapshots, "50")}"
+EOT
+}
+
+resource "kubernetes_manifest" "${eks_region_k}_${eks_name}_snapshot_quota" {
+  provider = kubernetes.${eks_region_k}_${eks_name}
+  manifest = yamldecode(data.template_file.${eks_region_k}_${eks_name}_snapshot_quota_manifest.rendered)
+}
+    
 %{ endif }
 
 resource "kubernetes_annotations" "${eks_region_k}_${eks_name}_gp2_disable_default" {
