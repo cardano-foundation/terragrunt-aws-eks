@@ -156,7 +156,7 @@ metadata:
   namespace: default
 spec:
   hard:
-    count/volumesnapshots.snapshot.storage.k8s.io: "${ try(eks_values.resourceQuotas.countVolumeSnapshots, "50")}"
+    count/volumesnapshots.snapshot.storage.k8s.io: "${ try(eks_values.resourceQuotas.countVolumeSnapshots, 50)}"
 EOT
 }
 
