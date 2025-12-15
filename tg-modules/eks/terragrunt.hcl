@@ -341,6 +341,80 @@ EOC
 }
       %{ endif ~}
 
+      %{ if try(eng_values.swap, "") != "" }
+        %{ if try(eng_values.swap.enabled, "") == false }
+resource "aws_ssm_association" "disable_swap_${eks_region_k}_${eks_name}_${eng_name}" {
+  name = "AWS-RunShellScript"
+  targets {
+    key    = "tag:eks:nodegroup-name"
+    values = [split(":", module.eks_node_group_${eks_region_k}_${eks_name}_${eng_name}.eks_node_group_id)[1]]
+  }
+  parameters = {
+    commands = <<-EOC
+      #!/bin/bash
+      SWAP_FILE=/swapfile
+      KUBELET_CONFIG_FILE="/etc/kubernetes/kubelet/config.json.d/99-swap.conf"
+      swapoff $SWAP_FILE
+      sed -i '^/$SWAP_FILE.*/d' /etc/fstab
+      rm -f $SWAP_FILE $KUBELET_CONFIG_FILE
+
+      systemctl daemon-reload
+      systemctl restart kubelet
+EOC
+  }
+  # optional: only run once
+  max_concurrency = "100%"
+  max_errors      = "0"
+}
+        %{ endif ~}
+        %{ if try(eng_values.swap.enabled, "") == true }
+          %{ if try(eng_values.swap.size, "") != "" }
+# NOTE: this requires arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore to be attached to the node group role
+# Create an aws_ssm_association that executes a script that will enable swap on the nodes
+resource "aws_ssm_association" "enable_swap_${eks_region_k}_${eks_name}_${eng_name}" {
+  name = "AWS-RunShellScript"
+
+  targets {
+    key    = "tag:eks:nodegroup-name"
+    values = [split(":", module.eks_node_group_${eks_region_k}_${eks_name}_${eng_name}.eks_node_group_id)[1]]
+  }
+
+  parameters = {
+    commands = <<-EOC
+      #!/bin/bash
+      KUBELET_CONFIG_FILE="/etc/kubernetes/kubelet/config.json.d/99-swap.conf"
+      SWAP_SIZE_GB=${eng_values.swap.size}
+      SWAP_FILE=/swapfile
+      fallocate -l $$${SWAP_SIZE_GB}G $SWAP_FILE
+      chmod 600 $SWAP_FILE
+      mkswap $SWAP_FILE
+      swapon $SWAP_FILE
+      grep -q $SWAP_FILE /etc/fstab || echo "$SWAP_FILE swap swap defaults 0 0" >> /etc/fstab
+
+      echo 'vm.swappiness=10' > /etc/sysctl.d/99-kubernetes-swap.conf
+      sysctl -p /etc/sysctl.d/99-kubernetes-swap.conf
+ 
+      # Setting LimitedSwap allows pods to burst memory usage into swap. Default is NoSwap, which would only let host processes (kubelet, ssm) use swap.
+      cat <<EOCAT > $KUBELET_CONFIG_FILE
+      {
+          "apiVersion": "kubelet.config.k8s.io/v1beta1",
+          "kind": "KubeletConfiguration",
+          "failSwapOn": false,
+          "memorySwap": { "swapBehavior": "${ try(eng_values.swap.behavior, "LimitedSwap") }" }
+      }
+      EOCAT
+
+      systemctl daemon-reload
+      systemctl restart kubelet
+EOC
+  }
+  # optional: only run once
+  max_concurrency = "100%"
+  max_errors      = "0"
+}
+        %{ endif ~}
+      %{ endif ~}
+    %{ endif ~}
 
 resource "aws_iam_role_policy_attachment" "alb_ingress_policy_${eks_region_k}_${eks_name}_${eng_name}" {
   policy_arn = aws_iam_policy.aws_alb_policy.arn
