@@ -455,7 +455,7 @@ module "hybrid_node_group_label_${eks_region_k}_${eks_name}_${hng_name}" {
   }
 }
 
-# IAM Role for Hybrid Nodes (for SSM Hybrid Activation)
+# IAM Role for Hybrid Nodes (EC2 Instance Profile)
 resource "aws_iam_role" "hybrid_node_role_${eks_region_k}_${eks_name}_${hng_name}" {
   provider = aws.${eks_region_k}
   
@@ -464,13 +464,6 @@ resource "aws_iam_role" "hybrid_node_role_${eks_region_k}_${eks_name}_${hng_name
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
-      {
-        Action = "sts:AssumeRole"
-        Effect = "Allow"
-        Principal = {
-          Service = "ssm.amazonaws.com"
-        }
-      },
       {
         Action = "sts:AssumeRole"
         Effect = "Allow"
@@ -639,18 +632,6 @@ resource "aws_security_group_rule" "hybrid_node_exposed_port_${eks_region_k}_${e
         %{ endfor ~}
       %{ endif ~}
 
-# SSM Hybrid Activation for Hybrid Nodes
-resource "aws_ssm_activation" "hybrid_node_activation_${eks_region_k}_${eks_name}_${hng_name}" {
-  provider = aws.${eks_region_k}
-  
-  name               = "$${local.env_short}-${eks_name}-hybrid-${hng_name}-${eks_region_k}"
-  description        = "SSM activation for EKS hybrid node group ${hng_name}"
-  iam_role           = aws_iam_role.hybrid_node_role_${eks_region_k}_${eks_name}_${hng_name}.name
-  registration_limit = ${ chomp(try("${hng_values.max-size}", 10) ) }
-  
-  tags = module.hybrid_node_group_label_${eks_region_k}_${eks_name}_${hng_name}.tags
-}
-
 # Get latest AMI
 data "aws_ssm_parameter" "hybrid_node_ami_${eks_region_k}_${eks_name}_${hng_name}" {
   provider = aws.${eks_region_k}
@@ -671,21 +652,20 @@ locals {
     CLUSTER_NAME=$${module.eks_cluster_${eks_region_k}_${eks_name}.eks_cluster_id}
     CLUSTER_REGION=${eks_region_k}
     EKS_CLUSTER_VERSION=$${module.eks_cluster_${eks_region_k}_${eks_name}.eks_cluster_version}
-    ACTIVATION_ID=$${aws_ssm_activation.hybrid_node_activation_${eks_region_k}_${eks_name}_${hng_name}.id}
-    ACTIVATION_CODE=$${aws_ssm_activation.hybrid_node_activation_${eks_region_k}_${eks_name}_${hng_name}.activation_code}
+    API_SERVER_ENDPOINT=$${module.eks_cluster_${eks_region_k}_${eks_name}.eks_cluster_endpoint}
+    CERT_AUTHORITY=$${module.eks_cluster_${eks_region_k}_${eks_name}.eks_cluster_certificate_authority_data}
+    CLUSTER_CIDR=$${module.eks_cluster_${eks_region_k}_${eks_name}.eks_cluster_service_ipv4_cidr}
     
-    # Create NodeConfig for EKS Hybrid Nodes
+    # Create NodeConfig for EKS Nodes
     cat <<EOF > /tmp/nodeconfig.yaml
     apiVersion: node.eks.aws/v1alpha1
     kind: NodeConfig
     spec:
       cluster:
         name: $${CLUSTER_NAME}
-        region: $${CLUSTER_REGION}
-      hybrid:
-        ssm:
-          activationId: $${ACTIVATION_ID}
-          activationCode: $${ACTIVATION_CODE}
+        apiServerEndpoint: $${API_SERVER_ENDPOINT}
+        certificateAuthority: $${CERT_AUTHORITY}
+        cidr: $${CLUSTER_CIDR}
     %{ if try(hng_values.max-pods, "") != "" }
       kubelet:
         config:
@@ -703,10 +683,10 @@ locals {
     
     # Install EKS dependencies using nodeadm
     echo "Installing EKS dependencies..."
-    nodeadm install $${EKS_CLUSTER_VERSION} --credential-provider ssm
+    nodeadm install $${EKS_CLUSTER_VERSION}
     
-    # Initialize the hybrid node
-    echo "Initializing hybrid node..."
+    # Initialize the node
+    echo "Initializing node..."
     nodeadm init -c file:///tmp/nodeconfig.yaml
     
     # Wait for kubelet to be ready

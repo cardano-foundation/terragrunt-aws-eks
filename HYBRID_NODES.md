@@ -1,16 +1,19 @@
 # EKS Hybrid Nodes Support
 
-This repository now supports AWS EKS hybrid nodes - EC2 instances that run in different VPCs from the EKS control plane and join the cluster using AWS SSM Hybrid Activations and the nodeadm CLI tool.
+This repository supports EC2 instances in different VPCs joining EKS clusters as worker nodes using the `nodeadm` CLI tool and standard EC2 instance profiles.
 
 ## Overview
 
-Hybrid nodes are EC2 instances managed by autoscaling groups that:
+These "hybrid nodes" are EC2 instances managed by autoscaling groups that:
 - Run in VPCs different from the EKS control plane VPC
 - Use VPC peering to communicate with the control plane
-- Join the EKS cluster using AWS SSM Hybrid Activations (not traditional bootstrap.sh)
+- Join the EKS cluster directly using `apiServerEndpoint` and `certificateAuthority`
 - Use the `nodeadm` CLI tool for installation and initialization
-- Are managed via AWS SSM for configuration (swap, kubelet settings, etc.)
+- Use standard EC2 IAM instance profiles for authentication (no SSM Hybrid Activation needed)
+- Are managed via AWS SSM for optional configuration (swap, kubelet settings, etc.)
 - Support all the same features as managed node groups
+
+**Note**: This implementation is optimized for EC2 instances in AWS. For true on-premises or edge hybrid nodes, AWS SSM Hybrid Activations would be required.
 
 ## Architecture
 
@@ -22,7 +25,7 @@ Hybrid nodes are EC2 instances managed by autoscaling groups that:
 │  ┌─────────────────────┐    │         │  ┌─────────────────────┐    │
 │  │ EKS Control Plane   │    │         │  │ Hybrid Node ASG     │    │
 │  │ - API Server        │    │         │  │ - EC2 Instances     │    │
-│  │ - etcd             │    │         │  │ - SSM Activation    │    │
+│  │ - etcd             │    │         │  │ - Instance Profile  │    │
 │  └─────────────────────┘    │         │  │ - nodeadm CLI       │    │
 │                             │         │  └─────────────────────┘    │
 │  ┌─────────────────────┐    │         │                             │
@@ -174,10 +177,9 @@ The VPC module automatically creates:
 For each hybrid node group, the EKS module creates:
 
 **IAM Resources:**
-- IAM role with assume role policy for SSM and EC2 services
+- IAM role with assume role policy for EC2 service
 - Policy attachments for: EKS Worker Node, CNI, ECR, SSM, ALB
 - IAM instance profile
-- SSM Hybrid Activation with activation ID and code
 
 **Security Groups:**
 - Security group for hybrid nodes
@@ -201,31 +203,29 @@ For each hybrid node group, the EKS module creates:
 
 ### 3. Cluster Join Process
 
-Hybrid nodes join the cluster using the EKS Hybrid Nodes method with SSM and nodeadm:
+Hybrid nodes join the cluster using nodeadm with direct API server connection:
 
 ```bash
 #!/bin/bash
 set -ex
 
-# Get cluster information and SSM activation
+# Get cluster information
 CLUSTER_NAME=<cluster-name>
-CLUSTER_REGION=<region>
+API_SERVER_ENDPOINT=<api-server-endpoint>
+CERT_AUTHORITY=<base64-encoded-ca>
+CLUSTER_CIDR=<service-ipv4-cidr>
 EKS_CLUSTER_VERSION=<version>
-ACTIVATION_ID=<ssm-activation-id>
-ACTIVATION_CODE=<ssm-activation-code>
 
-# Create NodeConfig for EKS Hybrid Nodes
+# Create NodeConfig
 cat <<EOF > /tmp/nodeconfig.yaml
 apiVersion: node.eks.aws/v1alpha1
 kind: NodeConfig
 spec:
   cluster:
     name: $CLUSTER_NAME
-    region: $CLUSTER_REGION
-  hybrid:
-    ssm:
-      activationId: $ACTIVATION_ID
-      activationCode: $ACTIVATION_CODE
+    apiServerEndpoint: $API_SERVER_ENDPOINT
+    certificateAuthority: $CERT_AUTHORITY
+    cidr: $CLUSTER_CIDR
 EOF
 
 # Install nodeadm CLI
@@ -234,26 +234,33 @@ tar -xzf /tmp/nodeadm.tar.gz -C /usr/local/bin/
 chmod +x /usr/local/bin/nodeadm
 
 # Install EKS dependencies
-nodeadm install $EKS_CLUSTER_VERSION --credential-provider ssm
+nodeadm install $EKS_CLUSTER_VERSION
 
-# Initialize the hybrid node
+# Initialize the node
 nodeadm init -c file:///tmp/nodeconfig.yaml
 ```
 
 The nodeadm process:
-1. Registers the node with SSM using the hybrid activation
-2. Installs containerd, kubelet, and required dependencies
-3. Configures kubelet with cluster connection details
-4. Uses SSM for secure credential management
-5. Joins node to the cluster
-6. Node appears in cluster and is ready for scheduling
+1. Installs containerd, kubelet, and required dependencies
+2. Configures kubelet with cluster connection details from NodeConfig
+3. Uses EC2 instance profile for IAM authentication
+4. Joins node to the cluster via API server endpoint
+5. Node appears in cluster and is ready for scheduling
 
 ### 4. SSM Configuration
 
 The implementation uses:
-- **SSM Hybrid Activation**: Provides secure credential management for hybrid nodes
+- **EC2 Instance Profile**: Standard IAM authentication for EC2 instances
 - **SSM Associations**: Optional post-bootstrap configuration for swap and other settings
-- **nodeadm CLI**: Official EKS tool for hybrid node management
+- **nodeadm CLI**: Official EKS tool for node management
+
+### 5. Remote Network Configuration (Optional)
+
+For true on-premises or edge hybrid nodes (not EC2), you would need to configure:
+- **remoteNodeNetworks**: CIDR ranges for nodes outside AWS
+- **remotePodNetworks**: CIDR ranges for pods on remote nodes
+
+These are cluster-level settings that tell EKS how to route traffic to/from on-premises infrastructure. For EC2 instances in AWS VPCs, VPC peering handles the routing automatically.
 
 ## Security
 
