@@ -636,7 +636,7 @@ resource "aws_security_group_rule" "hybrid_node_exposed_port_${eks_region_k}_${e
 data "aws_ssm_parameter" "hybrid_node_ami_${eks_region_k}_${eks_name}_${hng_name}" {
   provider = aws.${eks_region_k}
   
-  name = "/aws/service/eks/optimized-ami/$${module.eks_cluster_${eks_region_k}_${eks_name}.eks_cluster_version}/${ chomp(try("${hng_values.ami-type}", "amazon-linux-2/recommended")) }/image_id"
+  name = "/aws/service/eks/optimized-ami/$${module.eks_cluster_${eks_region_k}_${eks_name}.eks_cluster_version}/${ try(hng_values.ami-type, "amazon-linux-2/recommended") }/image_id"
 }
 
 # User Data for Hybrid Nodes
