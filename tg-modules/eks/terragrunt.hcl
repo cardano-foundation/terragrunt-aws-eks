@@ -457,6 +457,8 @@ module "hybrid_node_group_label_${eks_region_k}_${eks_name}_${hng_name}" {
 
 # IAM Role for Hybrid Nodes
 resource "aws_iam_role" "hybrid_node_role_${eks_region_k}_${eks_name}_${hng_name}" {
+  provider = aws.${eks_region_k}
+  
   name = "$${local.env_short}-${eks_name}-hybrid-${hng_name}-${eks_region_k}"
 
   assume_role_policy = jsonencode({
@@ -477,26 +479,36 @@ resource "aws_iam_role" "hybrid_node_role_${eks_region_k}_${eks_name}_${hng_name
 
 # Attach required policies for EKS nodes
 resource "aws_iam_role_policy_attachment" "hybrid_node_AmazonEKSWorkerNodePolicy_${eks_region_k}_${eks_name}_${hng_name}" {
+  provider = aws.${eks_region_k}
+  
   policy_arn = "arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy"
   role       = aws_iam_role.hybrid_node_role_${eks_region_k}_${eks_name}_${hng_name}.name
 }
 
 resource "aws_iam_role_policy_attachment" "hybrid_node_AmazonEKS_CNI_Policy_${eks_region_k}_${eks_name}_${hng_name}" {
+  provider = aws.${eks_region_k}
+  
   policy_arn = "arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy"
   role       = aws_iam_role.hybrid_node_role_${eks_region_k}_${eks_name}_${hng_name}.name
 }
 
 resource "aws_iam_role_policy_attachment" "hybrid_node_AmazonEC2ContainerRegistryReadOnly_${eks_region_k}_${eks_name}_${hng_name}" {
+  provider = aws.${eks_region_k}
+  
   policy_arn = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly"
   role       = aws_iam_role.hybrid_node_role_${eks_region_k}_${eks_name}_${hng_name}.name
 }
 
 resource "aws_iam_role_policy_attachment" "hybrid_node_AmazonSSMManagedInstanceCore_${eks_region_k}_${eks_name}_${hng_name}" {
+  provider = aws.${eks_region_k}
+  
   policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
   role       = aws_iam_role.hybrid_node_role_${eks_region_k}_${eks_name}_${hng_name}.name
 }
 
 resource "aws_iam_role_policy_attachment" "hybrid_node_alb_policy_${eks_region_k}_${eks_name}_${hng_name}" {
+  provider = aws.${eks_region_k}
+  
   policy_arn = aws_iam_policy.aws_alb_policy.arn
   role       = aws_iam_role.hybrid_node_role_${eks_region_k}_${eks_name}_${hng_name}.name
 }
@@ -505,6 +517,8 @@ resource "aws_iam_role_policy_attachment" "hybrid_node_alb_policy_${eks_region_k
         %{ for iam_k, iam_v in hng_values.extra-iam-policies ~}
 
 resource "aws_iam_role_policy_attachment" "hybrid_node_extra_policy_${eks_region_k}_${eks_name}_${hng_name}_${iam_k}" {
+  provider = aws.${eks_region_k}
+  
   policy_arn = "${iam_v}"
   role       = aws_iam_role.hybrid_node_role_${eks_region_k}_${eks_name}_${hng_name}.name
 }
@@ -513,6 +527,8 @@ resource "aws_iam_role_policy_attachment" "hybrid_node_extra_policy_${eks_region
 
 # IAM Instance Profile
 resource "aws_iam_instance_profile" "hybrid_node_profile_${eks_region_k}_${eks_name}_${hng_name}" {
+  provider = aws.${eks_region_k}
+  
   name = "$${local.env_short}-${eks_name}-hybrid-${hng_name}-${eks_region_k}"
   role = aws_iam_role.hybrid_node_role_${eks_region_k}_${eks_name}_${hng_name}.name
 
@@ -521,6 +537,8 @@ resource "aws_iam_instance_profile" "hybrid_node_profile_${eks_region_k}_${eks_n
 
 # Security Group for Hybrid Nodes
 resource "aws_security_group" "hybrid_node_sg_${eks_region_k}_${eks_name}_${hng_name}" {
+  provider = aws.${eks_region_k}
+  
   name_prefix = "$${local.env_short}-${eks_name}-hybrid-${hng_name}-"
   description = "Security group for hybrid node group ${hng_name}"
   vpc_id      = jsondecode(var.vpcs_json).vpc_${eks_region_k}_${hng_values.network.vpc}.vpc_info.vpc_id
@@ -535,6 +553,8 @@ resource "aws_security_group" "hybrid_node_sg_${eks_region_k}_${eks_name}_${hng_
 
 # Allow all egress
 resource "aws_security_group_rule" "hybrid_node_egress_${eks_region_k}_${eks_name}_${hng_name}" {
+  provider = aws.${eks_region_k}
+  
   type              = "egress"
   from_port         = 0
   to_port           = 0
@@ -545,6 +565,8 @@ resource "aws_security_group_rule" "hybrid_node_egress_${eks_region_k}_${eks_nam
 
 # Allow communication from control plane to nodes (kubelet)
 resource "aws_security_group_rule" "hybrid_node_ingress_from_control_plane_${eks_region_k}_${eks_name}_${hng_name}" {
+  provider = aws.${eks_region_k}
+  
   type                     = "ingress"
   from_port                = 10250
   to_port                  = 10250
@@ -556,6 +578,8 @@ resource "aws_security_group_rule" "hybrid_node_ingress_from_control_plane_${eks
 
 # Allow communication from control plane to nodes (HTTPS)
 resource "aws_security_group_rule" "hybrid_node_ingress_https_from_control_plane_${eks_region_k}_${eks_name}_${hng_name}" {
+  provider = aws.${eks_region_k}
+  
   type                     = "ingress"
   from_port                = 443
   to_port                  = 443
@@ -567,6 +591,8 @@ resource "aws_security_group_rule" "hybrid_node_ingress_https_from_control_plane
 
 # Allow nodes to communicate with each other
 resource "aws_security_group_rule" "hybrid_node_ingress_self_${eks_region_k}_${eks_name}_${hng_name}" {
+  provider = aws.${eks_region_k}
+  
   type              = "ingress"
   from_port         = 0
   to_port           = 65535
@@ -578,6 +604,8 @@ resource "aws_security_group_rule" "hybrid_node_ingress_self_${eks_region_k}_${e
 
 # Allow control plane to communicate with nodes
 resource "aws_security_group_rule" "control_plane_to_hybrid_nodes_${eks_region_k}_${eks_name}_${hng_name}" {
+  provider = aws.${eks_region_k}
+  
   type                     = "egress"
   from_port                = 0
   to_port                  = 65535
@@ -591,6 +619,8 @@ resource "aws_security_group_rule" "control_plane_to_hybrid_nodes_${eks_region_k
         %{ for sg_rule, sg_rule_values in hng_values.exposed-ports ~}
 
 resource "aws_security_group_rule" "hybrid_node_exposed_port_${eks_region_k}_${eks_name}_${hng_name}_${sg_rule}" {
+  provider = aws.${eks_region_k}
+  
   type              = "ingress"
   from_port         = ${sg_rule_values.number}
   to_port           = ${sg_rule_values.number}
@@ -604,6 +634,8 @@ resource "aws_security_group_rule" "hybrid_node_exposed_port_${eks_region_k}_${e
 
 # Get latest AMI
 data "aws_ssm_parameter" "hybrid_node_ami_${eks_region_k}_${eks_name}_${hng_name}" {
+  provider = aws.${eks_region_k}
+  
   name = "/aws/service/eks/optimized-ami/$${module.eks_cluster_${eks_region_k}_${eks_name}.eks_cluster_version}/${ chomp(try("${hng_values.ami-type}", "amazon-linux-2/recommended")) }/image_id"
 }
 
@@ -641,6 +673,10 @@ locals {
 module "hybrid_node_asg_${eks_region_k}_${eks_name}_${hng_name}" {
   source  = "cloudposse/ec2-autoscale-group/aws"
   version = "0.40.0"
+
+  providers = {
+    aws = aws.${eks_region_k}
+  }
 
   context = module.hybrid_node_group_label_${eks_region_k}_${eks_name}_${hng_name}.context
   name    = "$${local.env_short}-${eks_name}-hybrid-${hng_name}-${eks_region_k}"
@@ -728,6 +764,8 @@ module "hybrid_node_asg_${eks_region_k}_${eks_name}_${hng_name}" {
           %{ if try(hng_values.swap.size, "") != "" }
 
 resource "aws_ssm_association" "hybrid_node_enable_swap_${eks_region_k}_${eks_name}_${hng_name}" {
+  provider = aws.${eks_region_k}
+  
   name = "AWS-RunShellScript"
 
   targets {
