@@ -28,6 +28,19 @@ terragrunt run-all apply \
   --terragrunt-include-external-dependencies
 ```
 
+# Features
+
+## EKS Hybrid Nodes
+
+This project supports AWS EKS hybrid nodes - EC2 instances that run in different VPCs from the EKS control plane but join the cluster as worker nodes. This enables:
+
+- Multi-VPC EKS architectures
+- Cost optimization through spot instances in dedicated VPCs
+- Network isolation for different workload types
+- Flexible compute placement across VPCs
+
+See [HYBRID_NODES.md](HYBRID_NODES.md) for detailed documentation on configuring and using hybrid nodes.
+
 # Switching between environments
 
 Everything you need to do is to run a terraform reconfigure before being able to plan/apply a different environment:
