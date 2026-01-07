@@ -1,13 +1,14 @@
 # EKS Hybrid Nodes Support
 
-This repository now supports AWS EKS hybrid nodes - EC2 instances that run in different VPCs from the EKS control plane but can join the cluster as worker nodes.
+This repository now supports AWS EKS hybrid nodes - EC2 instances that run in different VPCs from the EKS control plane and join the cluster using AWS SSM Hybrid Activations and the nodeadm CLI tool.
 
 ## Overview
 
 Hybrid nodes are EC2 instances managed by autoscaling groups that:
 - Run in VPCs different from the EKS control plane VPC
 - Use VPC peering to communicate with the control plane
-- Join the EKS cluster automatically via user data bootstrap scripts
+- Join the EKS cluster using AWS SSM Hybrid Activations (not traditional bootstrap.sh)
+- Use the `nodeadm` CLI tool for installation and initialization
 - Are managed via AWS SSM for configuration (swap, kubelet settings, etc.)
 - Support all the same features as managed node groups
 
@@ -21,9 +22,9 @@ Hybrid nodes are EC2 instances managed by autoscaling groups that:
 │  ┌─────────────────────┐    │         │  ┌─────────────────────┐    │
 │  │ EKS Control Plane   │    │         │  │ Hybrid Node ASG     │    │
 │  │ - API Server        │    │         │  │ - EC2 Instances     │    │
-│  │ - etcd             │    │         │  │ - Auto-scaling      │    │
-│  └─────────────────────┘    │         │  └─────────────────────┘    │
-│                             │         │                             │
+│  │ - etcd             │    │         │  │ - SSM Activation    │    │
+│  └─────────────────────┘    │         │  │ - nodeadm CLI       │    │
+│                             │         │  └─────────────────────┘    │
 │  ┌─────────────────────┐    │         │                             │
 │  │ Managed Node Groups │    │         │                             │
 │  └─────────────────────┘    │         │                             │
@@ -173,9 +174,10 @@ The VPC module automatically creates:
 For each hybrid node group, the EKS module creates:
 
 **IAM Resources:**
-- IAM role with assume role policy for EC2
+- IAM role with assume role policy for SSM and EC2 services
 - Policy attachments for: EKS Worker Node, CNI, ECR, SSM, ALB
 - IAM instance profile
+- SSM Hybrid Activation with activation ID and code
 
 **Security Groups:**
 - Security group for hybrid nodes
@@ -188,7 +190,7 @@ For each hybrid node group, the EKS module creates:
 - CloudPosse EC2 autoscaling group module (v0.40.0)
 - Launch template with:
   - Latest EKS-optimized AMI for specified version and type
-  - User data script that bootstraps the node to join the cluster
+  - User data script using nodeadm for cluster join
   - Block device mappings
   - Security groups
   - IAM instance profile
@@ -199,45 +201,59 @@ For each hybrid node group, the EKS module creates:
 
 ### 3. Cluster Join Process
 
-Hybrid nodes join the cluster automatically via user data script:
+Hybrid nodes join the cluster using the EKS Hybrid Nodes method with SSM and nodeadm:
 
 ```bash
 #!/bin/bash
 set -ex
 
-# Configure AWS CLI region
-export AWS_DEFAULT_REGION=<region>
-
-# Get cluster information
+# Get cluster information and SSM activation
 CLUSTER_NAME=<cluster-name>
-CLUSTER_ENDPOINT=<cluster-endpoint>
-CLUSTER_CA=<cluster-ca-data>
+CLUSTER_REGION=<region>
+EKS_CLUSTER_VERSION=<version>
+ACTIVATION_ID=<ssm-activation-id>
+ACTIVATION_CODE=<ssm-activation-code>
 
-# Bootstrap the node
-/etc/eks/bootstrap.sh "$CLUSTER_NAME" \
-  --b64-cluster-ca "$CLUSTER_CA" \
-  --apiserver-endpoint "$CLUSTER_ENDPOINT"
+# Create NodeConfig for EKS Hybrid Nodes
+cat <<EOF > /tmp/nodeconfig.yaml
+apiVersion: node.eks.aws/v1alpha1
+kind: NodeConfig
+spec:
+  cluster:
+    name: $CLUSTER_NAME
+    region: $CLUSTER_REGION
+  hybrid:
+    ssm:
+      activationId: $ACTIVATION_ID
+      activationCode: $ACTIVATION_CODE
+EOF
 
-# Wait for kubelet to be ready
-while ! systemctl is-active --quiet kubelet; do
-  echo "Waiting for kubelet to start..."
-  sleep 5
-done
+# Install nodeadm CLI
+curl -o /tmp/nodeadm.tar.gz "https://hybrid-assets.eks.amazonaws.com/releases/latest/bin/linux/amd64/nodeadm.tar.gz"
+tar -xzf /tmp/nodeadm.tar.gz -C /usr/local/bin/
+chmod +x /usr/local/bin/nodeadm
+
+# Install EKS dependencies
+nodeadm install $EKS_CLUSTER_VERSION --credential-provider ssm
+
+# Initialize the hybrid node
+nodeadm init -c file:///tmp/nodeconfig.yaml
 ```
 
-The bootstrap script:
-1. Configures kubelet with cluster endpoint and CA certificate
-2. Downloads and configures AWS IAM Authenticator
-3. Configures containerd runtime
-4. Starts kubelet service
-5. Node appears in cluster and is ready for scheduling
+The nodeadm process:
+1. Registers the node with SSM using the hybrid activation
+2. Installs containerd, kubelet, and required dependencies
+3. Configures kubelet with cluster connection details
+4. Uses SSM for secure credential management
+5. Joins node to the cluster
+6. Node appears in cluster and is ready for scheduling
 
 ### 4. SSM Configuration
 
-After bootstrap, SSM associations run to:
-- Configure swap if enabled
-- Apply kubelet configuration for swap behavior
-- Restart kubelet with new settings
+The implementation uses:
+- **SSM Hybrid Activation**: Provides secure credential management for hybrid nodes
+- **SSM Associations**: Optional post-bootstrap configuration for swap and other settings
+- **nodeadm CLI**: Official EKS tool for hybrid node management
 
 ## Security
 
