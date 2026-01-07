@@ -118,6 +118,39 @@ eks:
             instance-types:
               - t3a.medium
               - t3a.xlarge
+        # Hybrid node groups in different VPC
+        hybrid-node-groups:
+          hybrid-compute:
+            network:
+              vpc: hybrid-vpc  # Different VPC from control plane
+              subnet:
+                name: default
+                kind: private
+              availability-zones:
+                - a
+                - b
+            desired-size: 2
+            min-size: 1
+            max-size: 5
+            instance-types:
+              - t3a.large
+            ami-type: amazon-linux-2/recommended  # AL2 or amazon-linux-2023/recommended for AL2023
+            autoscaler-enabled: true
+            spot-enabled: false  # Set to true for spot instances
+            block-device-mappings:
+              xvda:
+                volume-size: 50
+                volume-type: gp3
+                encrypted: true
+                delete-on-termination: true
+            exposed-ports:
+              <<: *default-exposed-ports
+            extra-iam-policies:
+              <<: *default-iam-policies
+            swap:
+              enabled: true
+              size: 4
+              behavior: LimitedSwap
       cluster-name-1:
         alb-dns-aliases: *default-alb-dns-aliases
         aws-auth-extra-roles: *default-aws-auth-extra-roles
@@ -172,3 +205,21 @@ network:
               - eu-west-1a
               - eu-west-1b
               - eu-west-1c
+        # Additional VPC for hybrid nodes
+        hybrid-vpc:
+          ipv4-cidr: 172.2.0.0/16
+          subnets:
+            default:
+              ipv4-cidr: 172.2.0.0/18
+              private_subnets_enabled: true
+              public_subnets_enabled: true
+              igw: true
+              ngw: true
+              availability-zones:
+              - eu-west-1a
+              - eu-west-1b
+              - eu-west-1c
+          # Configure VPC peering to control plane VPC
+          peering:
+            to-control-plane:
+              peer-vpc: example-com
