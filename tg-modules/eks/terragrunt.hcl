@@ -687,9 +687,11 @@ module "hybrid_node_asg_${eks_region_k}_${eks_name}_${hng_name}" {
       %{ if try(hng_values.spot-enabled, false) == true }
   instance_market_options = {
     market_type = "spot"
+        %{ if try(hng_values.spot-max-price, "") != "" }
     spot_options = {
-      max_price = "${ chomp(try("${hng_values.spot-max-price}", "")) }"
+      max_price = "${ hng_values.spot-max-price }"
     }
+        %{ endif ~}
   }
       %{ endif ~}
 
@@ -786,7 +788,7 @@ resource "aws_ssm_association" "hybrid_node_enable_swap_${eks_region_k}_${eks_na
         exit 0
       fi
       
-      fallocate -l $$${SWAP_SIZE_GB}G $SWAP_FILE
+      fallocate -l $${SWAP_SIZE_GB}G $SWAP_FILE
       chmod 600 $SWAP_FILE
       mkswap $SWAP_FILE
       swapon $SWAP_FILE
