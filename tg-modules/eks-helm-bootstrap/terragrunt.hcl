@@ -118,11 +118,17 @@ EOT
 resource "kubernetes_manifest" "${eks_region_k}_${eks_name}_gp3" {
   provider = kubernetes.${eks_region_k}_${eks_name}
   manifest = yamldecode(data.template_file.${eks_region_k}_${eks_name}_gp3_manifest.rendered)
+  computed_fields = [
+    "provisioner"
+  ]
 }
 
 resource "kubernetes_manifest" "${eks_region_k}_${eks_name}_gp3_encrypted" {
   provider = kubernetes.${eks_region_k}_${eks_name}
   manifest = yamldecode(data.template_file.${eks_region_k}_${eks_name}_gp3_encrypted_manifest.rendered)
+  computed_fields = [
+    "provisioner"
+  ]
 }
 
 resource "kubernetes_manifest" "${eks_region_k}_${eks_name}_gp3_encrypted_csi" {
