@@ -98,6 +98,7 @@ eks:
           hybrid-compute:
             network:
               vpc: hybrid-vpc  # Different VPC!
+              region: eu-west-2  # Optional: deploy in different region
               subnet:
                 name: default
                 kind: private
@@ -145,6 +146,7 @@ eks:
 
 ### Optional Fields
 
+- `network.region`: AWS region for the hybrid nodes (default: cluster region). **This enables cross-region hybrid nodes!**
 - `network.availability-zones`: Specific AZs to use (default: all AZs in subnet)
 - `desired-size`: Initial number of nodes (default: 1)
 - `min-size`: Minimum nodes (default: 1)

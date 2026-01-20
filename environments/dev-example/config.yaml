@@ -123,6 +123,7 @@ eks:
           hybrid-compute:
             network:
               vpc: hybrid-vpc  # Different VPC from control plane
+              # region: eu-west-2  # Optional: specify a different region (defaults to cluster region)
               subnet:
                 name: default
                 kind: private
