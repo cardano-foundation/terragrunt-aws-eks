@@ -640,71 +640,6 @@ data "aws_ssm_parameter" "hybrid_node_ami_${eks_region_k}_${eks_name}_${hng_name
   name = "/aws/service/eks/optimized-ami/$${module.eks_cluster_${eks_region_k}_${eks_name}.eks_cluster_version}/${ try(hng_values.ami-type, "amazon-linux-2/recommended") }/image_id"
 }
 
-# User Data for Hybrid Nodes using nodeadm
-locals {
-  hybrid_node_userdata_${eks_region_k}_${eks_name}_${hng_name} = <<-USERDATA
-    #!/bin/bash
-    set -ex
-    
-    # Configure AWS CLI region
-    export AWS_DEFAULT_REGION=${ try(hng_values.network.region, eks_region_k) }
-    
-    # Get cluster information
-    CLUSTER_NAME=$${module.eks_cluster_${eks_region_k}_${eks_name}.eks_cluster_id}
-    CLUSTER_REGION=${eks_region_k}
-    EKS_CLUSTER_VERSION=$${module.eks_cluster_${eks_region_k}_${eks_name}.eks_cluster_version}
-    API_SERVER_ENDPOINT=$${module.eks_cluster_${eks_region_k}_${eks_name}.eks_cluster_endpoint}
-    CERT_AUTHORITY=$${module.eks_cluster_${eks_region_k}_${eks_name}.eks_cluster_certificate_authority_data}
-    CLUSTER_CIDR=$${module.eks_cluster_${eks_region_k}_${eks_name}.eks_cluster_service_ipv4_cidr}
-    
-    # Create NodeConfig for EKS Nodes
-    cat <<EOF > /tmp/nodeconfig.yaml
-    apiVersion: node.eks.aws/v1alpha1
-    kind: NodeConfig
-    spec:
-      cluster:
-        name: $${CLUSTER_NAME}
-        apiServerEndpoint: $${API_SERVER_ENDPOINT}
-        certificateAuthority: $${CERT_AUTHORITY}
-        cidr: $${CLUSTER_CIDR}
-    %{ if try(hng_values.max-pods, "") != "" }
-      kubelet:
-        config:
-          maxPods: ${hng_values.max-pods}
-    %{ endif ~}
-    EOF
-    
-    # Install nodeadm if not already installed
-    if ! command -v nodeadm &> /dev/null; then
-      echo "Installing nodeadm..."
-      curl -o /tmp/nodeadm.tar.gz "https://hybrid-assets.eks.amazonaws.com/releases/latest/bin/linux/amd64/nodeadm.tar.gz"
-      tar -xzf /tmp/nodeadm.tar.gz -C /usr/local/bin/
-      chmod +x /usr/local/bin/nodeadm
-    fi
-    
-    # Install EKS dependencies using nodeadm
-    echo "Installing EKS dependencies..."
-    nodeadm install $${EKS_CLUSTER_VERSION}
-    
-    # Initialize the node
-    echo "Initializing node..."
-    nodeadm init -c file:///tmp/nodeconfig.yaml
-    
-    # Wait for kubelet to be ready
-    echo "Waiting for kubelet to become active..."
-    for i in {1..30}; do
-      if systemctl is-active --quiet kubelet; then
-        echo "Kubelet is active"
-        break
-      fi
-      echo "Waiting for kubelet... ($i/30)"
-      sleep 10
-    done
-    
-    echo "Hybrid node bootstrap completed successfully"
-  USERDATA
-}
-
 # Autoscaling Group using CloudPosse module
 module "hybrid_node_asg_${eks_region_k}_${eks_name}_${hng_name}" {
   source  = "cloudposse/ec2-autoscale-group/aws"
@@ -760,8 +695,6 @@ module "hybrid_node_asg_${eks_region_k}_${eks_name}_${hng_name}" {
   max_size         = ${ chomp(try("${hng_values.max-size}", 3) ) }
   desired_capacity = ${ chomp(try("${hng_values.desired-size}", 1) ) }
 
-  user_data_base64 = base64encode(local.hybrid_node_userdata_${eks_region_k}_${eks_name}_${hng_name})
-
   # Enable cluster autoscaler tags if requested
       %{ if try(hng_values.autoscaler-enabled, false) == true }
   tags = merge(
@@ -794,6 +727,91 @@ module "hybrid_node_asg_${eks_region_k}_${eks_name}_${hng_name}" {
   mixed_instances_policy = null
   health_check_type      = "EC2"
   wait_for_capacity_timeout = "10m"
+}
+
+# SSM Association for hybrid node bootstrap
+resource "aws_ssm_association" "hybrid_node_bootstrap_${eks_region_k}_${eks_name}_${hng_name}" {
+  provider = aws.${ try(hng_values.network.region, eks_region_k) }
+  
+  name = "AWS-RunShellScript"
+
+  targets {
+    key    = "tag:Name"
+    values = ["$${local.env_short}-${eks_name}-hybrid-${hng_name}-${ try(hng_values.network.region, eks_region_k) }"]
+  }
+
+  parameters = {
+    commands = join("\n", [
+      "#!/bin/bash",
+      "set -ex",
+      "",
+      "# Configure AWS CLI region",
+      "export AWS_DEFAULT_REGION=${ try(hng_values.network.region, eks_region_k) }",
+      "",
+      "# Get cluster information from SSM parameters",
+      "CLUSTER_NAME=$${module.eks_cluster_${eks_region_k}_${eks_name}.eks_cluster_id}",
+      "CLUSTER_REGION=${eks_region_k}",
+      "EKS_CLUSTER_VERSION=$${module.eks_cluster_${eks_region_k}_${eks_name}.eks_cluster_version}",
+      "API_SERVER_ENDPOINT=$${module.eks_cluster_${eks_region_k}_${eks_name}.eks_cluster_endpoint}",
+      "CERT_AUTHORITY=$${module.eks_cluster_${eks_region_k}_${eks_name}.eks_cluster_certificate_authority_data}",
+      "CLUSTER_CIDR=$${module.eks_cluster_${eks_region_k}_${eks_name}.eks_cluster_service_ipv4_cidr}",
+      "",
+      "# Check if node is already bootstrapped",
+      "if systemctl is-active --quiet kubelet; then",
+      "  echo 'Node already bootstrapped'",
+      "  exit 0",
+      "fi",
+      "",
+      "# Create NodeConfig for EKS Nodes",
+      "cat > /tmp/nodeconfig.yaml <<NODECONFIG",
+      "apiVersion: node.eks.aws/v1alpha1",
+      "kind: NodeConfig",
+      "spec:",
+      "  cluster:",
+      "    name: $${CLUSTER_NAME}",
+      "    apiServerEndpoint: $${API_SERVER_ENDPOINT}",
+      "    certificateAuthority: $${CERT_AUTHORITY}",
+      "    cidr: $${CLUSTER_CIDR}",
+%{ if try(hng_values.max-pods, "") != "" ~}
+      "  kubelet:",
+      "    config:",
+      "      maxPods: ${hng_values.max-pods}",
+%{ endif ~}
+      "NODECONFIG",
+      "",
+      "# Install nodeadm if not already installed",
+      "if ! command -v nodeadm &> /dev/null; then",
+      "  echo 'Installing nodeadm...'",
+      "  curl -o /tmp/nodeadm.tar.gz https://hybrid-assets.eks.amazonaws.com/releases/latest/bin/linux/amd64/nodeadm.tar.gz",
+      "  tar -xzf /tmp/nodeadm.tar.gz -C /usr/local/bin/",
+      "  chmod +x /usr/local/bin/nodeadm",
+      "fi",
+      "",
+      "# Install EKS dependencies using nodeadm",
+      "echo 'Installing EKS dependencies...'",
+      "nodeadm install $${EKS_CLUSTER_VERSION}",
+      "",
+      "# Initialize the node",
+      "echo 'Initializing node...'",
+      "nodeadm init -c file:///tmp/nodeconfig.yaml",
+      "",
+      "# Wait for kubelet to be ready",
+      "echo 'Waiting for kubelet to become active...'",
+      "for i in {1..30}; do",
+      "  if systemctl is-active --quiet kubelet; then",
+      "    echo 'Kubelet is active'",
+      "    break",
+      "  fi",
+      "  echo \"Waiting for kubelet... ($i/30)\"",
+      "  sleep 10",
+      "done",
+      "",
+      "echo 'Hybrid node bootstrap completed successfully'"
+    ])
+  }
+  
+  max_concurrency = "100%"
+  max_errors      = "0"
 }
 
 # SSM Association for cluster join and configuration
