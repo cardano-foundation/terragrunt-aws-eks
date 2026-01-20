@@ -88,14 +88,29 @@ generate "dynamic-vpc-peering" {
     %{ if try(vpc_values.peering, "") != "" }
       %{ for peering_name, peering_values in vpc_values.peering ~}
 
+# Add the aws_vpc_peering_connection_accepter resource in the peer VPC's region if the peer VPC is in a different region
+        %{ if peering_values.peer-region != "" && peering_values.peer-region != vpc_region_k }
+resource "aws_vpc_peering_connection_accepter" "peering_accepter_${peering_values.peer-region}_${peering_values.peer-vpc}_to_${vpc_name}" {
+  provider = aws.${peering_values.peer-region}
+
+  vpc_peering_connection_id = aws_vpc_peering_connection.peering_${vpc_region_k}_${vpc_name}_to_${peering_values.peer-vpc}.id
+  auto_accept              = true
+
+  tags = {
+    Name = "${local.config.general.env-short}-peering-${peering_values.peer-vpc}-to-${vpc_name}"
+    Side = "Accepter"
+  }
+}
+        %{ endif ~}
+
 # VPC Peering from ${vpc_name} to ${peering_values.peer-vpc}
 resource "aws_vpc_peering_connection" "peering_${vpc_region_k}_${vpc_name}_to_${peering_values.peer-vpc}" {
   provider = aws.${vpc_region_k}
   
   vpc_id        = module.vpc_${vpc_region_k}_${vpc_name}.vpc_id
-  peer_vpc_id   = module.vpc_${vpc_region_k}_${peering_values.peer-vpc}.vpc_id
-  peer_region   = "${vpc_region_k}"
-  auto_accept   = true
+  peer_vpc_id   = module.vpc_${peering_values.peer-region}_${peering_values.peer-vpc}.vpc_id
+  peer_region   = ${peering_values.peer-region != "" ? "\"${peering_values.peer-region}\"" : "aws.${vpc_region_k}.region" }
+  auto_accept   = false
 
   tags = {
     Name = "${local.config.general.env-short}-peering-${vpc_name}-to-${peering_values.peer-vpc}"
@@ -112,7 +127,7 @@ resource "aws_route" "peering_route_${vpc_region_k}_${vpc_name}_${sn_name}_priva
   count = length(module.subnet_${vpc_region_k}_${vpc_name}_${sn_name}.private_route_table_ids)
   
   route_table_id            = module.subnet_${vpc_region_k}_${vpc_name}_${sn_name}.private_route_table_ids[count.index]
-  destination_cidr_block    = module.vpc_${vpc_region_k}_${peering_values.peer-vpc}.vpc_cidr_block
+  destination_cidr_block    = module.vpc_${peering_values.peer-region}_${peering_values.peer-vpc}.vpc_cidr_block
   vpc_peering_connection_id = aws_vpc_peering_connection.peering_${vpc_region_k}_${vpc_name}_to_${peering_values.peer-vpc}.id
 }
           %{ endif ~}
@@ -123,7 +138,7 @@ resource "aws_route" "peering_route_${vpc_region_k}_${vpc_name}_${sn_name}_publi
   count = length(module.subnet_${vpc_region_k}_${vpc_name}_${sn_name}.public_route_table_ids)
   
   route_table_id            = module.subnet_${vpc_region_k}_${vpc_name}_${sn_name}.public_route_table_ids[count.index]
-  destination_cidr_block    = module.vpc_${vpc_region_k}_${peering_values.peer-vpc}.vpc_cidr_block
+  destination_cidr_block    = module.vpc_${peering_values.peer-region}_${peering_values.peer-vpc}.vpc_cidr_block
   vpc_peering_connection_id = aws_vpc_peering_connection.peering_${vpc_region_k}_${vpc_name}_to_${peering_values.peer-vpc}.id
 }
           %{ endif ~}
