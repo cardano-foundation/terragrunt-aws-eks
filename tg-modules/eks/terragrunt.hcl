@@ -107,6 +107,17 @@ module "eks_cluster_${eks_region_k}_${eks_name}" {
   %{ endfor ~}
   )
 
+  # if any hybrid-node-groups are defined, add remote_network_config with vpc cidrs for any given node group
+  %{ if try(eks_values.hybrid-node-groups, "") != "" }
+  remote_network_config = {
+    remote_node_networks_cidrs = [
+        %{ for hng_name, hng_values in eks_values.hybrid-node-groups ~}
+          jsondecode(var.vpcs_json).vpc_${hng_values.network.region}_${hng_values.network.vpc}.vpc_info.vpc_cidr_block,
+        %{ endfor ~}
+    ]
+  }
+  %{ endif ~}
+
   kubernetes_version    = "${ chomp(try("${eks_values.k8s-version}", "1.31") ) }"
   oidc_provider_enabled = true
   endpoint_private_access = "${ chomp(try("${eks_values.endpoint-private-access}", true) ) }"
@@ -433,11 +444,100 @@ resource "aws_iam_role_policy_attachment" "ebs_policy_${eks_region_k}_${eks_name
 
     %{ endfor ~}
 
+    %{ if try(eks_values.hybrid-node-groups, "") != "" }
+data "template_file" "${eks_region_k}_${eks_name}_cilium" {
+  template = <<EOT
+k8sServiceHost: $${replace(module.eks_cluster_${eks_region_k}_${eks_name}.eks_cluster_endpoint, "https://", "")}
+k8sServicePort: 443
+affinity:
+  nodeAffinity:
+    requiredDuringSchedulingIgnoredDuringExecution:
+      nodeSelectorTerms:
+      - matchExpressions:
+        - key: eks.amazonaws.com/compute-type
+          operator: In
+          values:
+          - hybrid
+bpf:
+  masquerade: true
+eni:
+  enabled: true
+  updateEC2AdapterLimitViaAPI: true
+  awsReleaseExcessIPs: true
+  awsEnablePrefixDelegation: true
+  ec2APIEndpoint: ""
+ipam:
+  mode: eni
+k8s:
+ requireIPv4PodCIDR: false
+routingMode: native
+kubeProxyReplacement: true
+endpointRoutes:
+  enabled: true
+nodePort:
+  enabled: true
+loadBalancer:
+  serviceTopology: true
+operator:
+  image:
+    repository: cilium/operator
+    # replace suffix -[0-9] from the cni version as docker images dont have them
+    tag: "$${replace("v${ chomp(try("${eks_values.network.hybrid-nodes.cni.version}", "1.17.12-0")) }", "/-[0-9]+$/", "")}"
+  affinity:
+    nodeAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+        - matchExpressions:
+          - key: eks.amazonaws.com/compute-type
+            operator: In
+            values:
+              - hybrid
+  unmanagedPodWatcher:
+    restart: false
+loadBalancer:
+  serviceTopology: true
+envoy:
+  enabled: false
+kubeProxyReplacement: "false"
+EOT
+
+}
+
+data "aws_eks_cluster_auth" "eks_auth_${eks_region_k}_${eks_name}" {
+  name  = module.eks_cluster_${eks_region_k}_${eks_name}.eks_cluster_id
+}
+
+provider "helm" {
+  alias = "${eks_region_k}_${eks_name}"
+
+  repository_config_path = "$${path.module}/.helm/repositories.yaml"
+  repository_cache       = "$${path.module}/.helm"
+
+  kubernetes = {
+    host                   = module.eks_cluster_${eks_region_k}_${eks_name}.eks_cluster_endpoint
+    cluster_ca_certificate = base64decode(module.eks_cluster_${eks_region_k}_${eks_name}.eks_cluster_certificate_authority_data)
+    token                  = data.aws_eks_cluster_auth.eks_auth_${eks_region_k}_${eks_name}.token
+  }
+
+}
+
+resource "helm_release" "${eks_region_k}_${eks_name}_cilium" {
+  provider   = helm.${eks_region_k}_${eks_name}
+  repository = "${ chomp (try("${eks_values.network.hybrid-nodes.cni.repository}", "oci://public.ecr.aws/eks/cilium")) }"
+  namespace  = "kube-system"
+  chart      = "${ chomp (try("${eks_values.network.hybrid-nodes.cni.chart}", "cilium")) }"
+  name       = "${ chomp (try("${eks_values.network.hybrid-nodes.cni.release-name}", "cilium")) }"
+  version    = "${ chomp (try("${eks_values.network.hybrid-nodes.cni.version}", "1.17.12-0")) }"
+
+  values = [trimspace(data.template_file.${eks_region_k}_${eks_name}_cilium.rendered)]
+
+}
+    %{ endif ~}
     %{ for hng_name, hng_values in try(eks_values.hybrid-node-groups, {}) ~}
 
 # ========================================
 # Hybrid Node Group: ${hng_name}
-# Region: ${ try(hng_values.network.region, eks_region_k) }
+# Region: ${hng_values.network.region}
 # ========================================
 
 module "hybrid_node_group_label_${eks_region_k}_${eks_name}_${hng_name}" {
@@ -447,7 +547,7 @@ module "hybrid_node_group_label_${eks_region_k}_${eks_name}_${hng_name}" {
 
   stage      = ""
   namespace  = ""
-  name       = "$${local.env_short}-${eks_name}-hybrid-${hng_name}-${ try(hng_values.network.region, eks_region_k) }"
+  name       = "$${local.env_short}-${eks_name}-hybrid-${hng_name}-${hng_values.network.region}"
   delimiter  = "-"
   tags = {
     "Environment" = "$${local.environment}",
@@ -456,11 +556,10 @@ module "hybrid_node_group_label_${eks_region_k}_${eks_name}_${hng_name}" {
   }
 }
 
-# IAM Role for Hybrid Nodes (EC2 Instance Profile)
 resource "aws_iam_role" "hybrid_node_role_${eks_region_k}_${eks_name}_${hng_name}" {
-  provider = aws.${ try(hng_values.network.region, eks_region_k) }
+  provider = aws.${hng_values.network.region}
   
-  name = "$${local.env_short}-${eks_name}-hybrid-${hng_name}-${ try(hng_values.network.region, eks_region_k) }"
+  name = "$${local.env_short}-${eks_name}-hybrid-${hng_name}-${hng_values.network.region}"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -480,57 +579,123 @@ resource "aws_iam_role" "hybrid_node_role_${eks_region_k}_${eks_name}_${hng_name
 
 # Attach required policies for EKS nodes
 resource "aws_iam_role_policy_attachment" "hybrid_node_AmazonEKSWorkerNodePolicy_${eks_region_k}_${eks_name}_${hng_name}" {
-  provider = aws.${ try(hng_values.network.region, eks_region_k) }
+  provider = aws.${hng_values.network.region}
   
   policy_arn = "arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy"
-  role       = aws_iam_role.hybrid_node_role_${eks_region_k}_${eks_name}_${hng_name}.name
+  #role       = aws_iam_role.hybrid_node_role_${eks_region_k}_${eks_name}_${hng_name}.name
+  role = module.hybrid_node_group_label_${eks_region_k}_${eks_name}_${hng_name}.name
 }
 
 resource "aws_iam_role_policy_attachment" "hybrid_node_AmazonEKS_CNI_Policy_${eks_region_k}_${eks_name}_${hng_name}" {
-  provider = aws.${ try(hng_values.network.region, eks_region_k) }
+  provider = aws.${hng_values.network.region}
   
   policy_arn = "arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy"
-  role       = aws_iam_role.hybrid_node_role_${eks_region_k}_${eks_name}_${hng_name}.name
+  #role       = aws_iam_role.hybrid_node_role_${eks_region_k}_${eks_name}_${hng_name}.name
+  role = module.hybrid_node_group_label_${eks_region_k}_${eks_name}_${hng_name}.name
 }
 
 resource "aws_iam_role_policy_attachment" "hybrid_node_AmazonEC2ContainerRegistryReadOnly_${eks_region_k}_${eks_name}_${hng_name}" {
-  provider = aws.${ try(hng_values.network.region, eks_region_k) }
+  provider = aws.${hng_values.network.region}
   
   policy_arn = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly"
-  role       = aws_iam_role.hybrid_node_role_${eks_region_k}_${eks_name}_${hng_name}.name
+  #role       = aws_iam_role.hybrid_node_role_${eks_region_k}_${eks_name}_${hng_name}.name
+  role = module.hybrid_node_group_label_${eks_region_k}_${eks_name}_${hng_name}.name
 }
 
 resource "aws_iam_role_policy_attachment" "hybrid_node_AmazonSSMManagedInstanceCore_${eks_region_k}_${eks_name}_${hng_name}" {
-  provider = aws.${ try(hng_values.network.region, eks_region_k) }
+  provider = aws.${hng_values.network.region}
   
   policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
-  role       = aws_iam_role.hybrid_node_role_${eks_region_k}_${eks_name}_${hng_name}.name
+  #role       = aws_iam_role.hybrid_node_role_${eks_region_k}_${eks_name}_${hng_name}.name
+  role = module.hybrid_node_group_label_${eks_region_k}_${eks_name}_${hng_name}.name
 }
 
 resource "aws_iam_role_policy_attachment" "hybrid_node_alb_policy_${eks_region_k}_${eks_name}_${hng_name}" {
-  provider = aws.${ try(hng_values.network.region, eks_region_k) }
+  provider = aws.${hng_values.network.region}
   
   policy_arn = aws_iam_policy.aws_alb_policy.arn
-  role       = aws_iam_role.hybrid_node_role_${eks_region_k}_${eks_name}_${hng_name}.name
+  #role       = aws_iam_role.hybrid_node_role_${eks_region_k}_${eks_name}_${hng_name}.name
+  role = module.hybrid_node_group_label_${eks_region_k}_${eks_name}_${hng_name}.name
 }
 
       %{ if try(hng_values.extra-iam-policies, "") != "" }
         %{ for iam_k, iam_v in hng_values.extra-iam-policies ~}
 
 resource "aws_iam_role_policy_attachment" "hybrid_node_extra_policy_${eks_region_k}_${eks_name}_${hng_name}_${iam_k}" {
-  provider = aws.${ try(hng_values.network.region, eks_region_k) }
+  provider = aws.${hng_values.network.region}
   
   policy_arn = "${iam_v}"
-  role       = aws_iam_role.hybrid_node_role_${eks_region_k}_${eks_name}_${hng_name}.name
+  #role       = aws_iam_role.hybrid_node_role_${eks_region_k}_${eks_name}_${hng_name}.name
+  role = module.hybrid_node_group_label_${eks_region_k}_${eks_name}_${hng_name}.name
 }
         %{ endfor ~}
       %{ endif ~}
 
+module "eks_hybrid_node_role_${eks_region_k}_${eks_name}_${hng_name}" {
+  
+  providers = {
+    aws = aws.${eks_region_k}
+  }
+
+  source = "terraform-aws-modules/eks/aws//modules/hybrid-node-role"
+  version = "${ chomp(try(local.config.eks.hybrid-node-role-module-version, "20.35.0")) }"
+
+  name = "hnr-${eks_region_k}-${eks_name}-${hng_name}"
+}
+
+resource "aws_ssm_activation" "eks_hybrid_node_activation_${eks_region_k}_${eks_name}_${hng_name}" {
+  provider = aws.${eks_region_k}
+
+  name               = "hybrid-node-${eks_region_k}-${eks_name}-${hng_name}"
+  iam_role           = module.eks_hybrid_node_role_${eks_region_k}_${eks_name}_${hng_name}.name
+  registration_limit = 1000
+  expiration_date    = formatdate("YYYY-MM-DD'T'HH:mm:ss'Z'", timeadd(timestamp(), "720h")) # 30 days from now
+
+}
+
+resource "aws_eks_access_entry" "${eks_region_k}_${eks_name}_${hng_name}_access_entry" {
+  provider = aws.${eks_region_k}
+
+  cluster_name      = "stg-cf-idw-eu-west-1-cluster"
+  principal_arn     = module.eks_hybrid_node_role_${eks_region_k}_${eks_name}_${hng_name}.arn
+  type              = "HYBRID_LINUX"
+}
+
+resource "aws_iam_role_policy_attachment" "${eks_region_k}_${eks_name}_${hng_name}_hybrid_node_AmazonEKSWorkerNodePolicy" {
+  role       = aws_iam_role.hybrid_node_role_${eks_region_k}_${eks_name}_${hng_name}.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy"
+}
+
+# atach a policy that allows           "eks:ListAccessEntries"
+resource "aws_iam_policy" "${eks_region_k}_${eks_name}_${hng_name}_eks_list_access_entries_policy" {
+  name        = "eks-list-access-entries-policy-${eks_region_k}-${eks_name}-${hng_name}"
+  description = "Policy to allow nodeadm perform cluster read actions for hybrid node group ${hng_name} in cluster ${eks_name} in region ${eks_region_k}"
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "eks:DescribeCluster",
+          "eks:ListAccessEntries"
+        ]
+        Resource = module.eks_cluster_${eks_region_k}_${eks_name}.eks_cluster_arn
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "${eks_region_k}_${eks_name}_${hng_name}_attach_eks_list_access_entries_policy" {
+  role       = module.eks_hybrid_node_role_${eks_region_k}_${eks_name}_${hng_name}.name
+  policy_arn = aws_iam_policy.${eks_region_k}_${eks_name}_${hng_name}_eks_list_access_entries_policy.arn
+}
+
 # IAM Instance Profile
 resource "aws_iam_instance_profile" "hybrid_node_profile_${eks_region_k}_${eks_name}_${hng_name}" {
-  provider = aws.${ try(hng_values.network.region, eks_region_k) }
+  provider = aws.${hng_values.network.region}
   
-  name = "$${local.env_short}-${eks_name}-hybrid-${hng_name}-${ try(hng_values.network.region, eks_region_k) }"
+  name = "$${local.env_short}-${eks_name}-hybrid-${hng_name}-${hng_values.network.region}"
   role = aws_iam_role.hybrid_node_role_${eks_region_k}_${eks_name}_${hng_name}.name
 
   tags = module.hybrid_node_group_label_${eks_region_k}_${eks_name}_${hng_name}.tags
@@ -538,23 +703,23 @@ resource "aws_iam_instance_profile" "hybrid_node_profile_${eks_region_k}_${eks_n
 
 # Security Group for Hybrid Nodes
 resource "aws_security_group" "hybrid_node_sg_${eks_region_k}_${eks_name}_${hng_name}" {
-  provider = aws.${ try(hng_values.network.region, eks_region_k) }
+  provider = aws.${hng_values.network.region}
   
   name_prefix = "$${local.env_short}-${eks_name}-hybrid-${hng_name}-"
   description = "Security group for hybrid node group ${hng_name}"
-  vpc_id      = jsondecode(var.vpcs_json).vpc_${ try(hng_values.network.region, eks_region_k) }_${hng_values.network.vpc}.vpc_info.vpc_id
+  vpc_id      = jsondecode(var.vpcs_json).vpc_${hng_values.network.region}_${hng_values.network.vpc}.vpc_info.vpc_id
 
   tags = merge(
     module.hybrid_node_group_label_${eks_region_k}_${eks_name}_${hng_name}.tags,
     {
-      Name = "$${local.env_short}-${eks_name}-hybrid-${hng_name}-${ try(hng_values.network.region, eks_region_k) }"
+      Name = "$${local.env_short}-${eks_name}-hybrid-${hng_name}-${hng_values.network.region}"
     }
   )
 }
 
 # Allow all egress
 resource "aws_security_group_rule" "hybrid_node_egress_${eks_region_k}_${eks_name}_${hng_name}" {
-  provider = aws.${ try(hng_values.network.region, eks_region_k) }
+  provider = aws.${hng_values.network.region}
   
   type              = "egress"
   from_port         = 0
@@ -564,63 +729,34 @@ resource "aws_security_group_rule" "hybrid_node_egress_${eks_region_k}_${eks_nam
   security_group_id = aws_security_group.hybrid_node_sg_${eks_region_k}_${eks_name}_${hng_name}.id
 }
 
-# Allow communication from control plane to nodes (kubelet)
-resource "aws_security_group_rule" "hybrid_node_ingress_from_control_plane_${eks_region_k}_${eks_name}_${hng_name}" {
-  provider = aws.${ try(hng_values.network.region, eks_region_k) }
-  
-  type                     = "ingress"
-  from_port                = 10250
-  to_port                  = 10250
-  protocol                 = "tcp"
-  source_security_group_id = module.eks_cluster_${eks_region_k}_${eks_name}.eks_cluster_managed_security_group_id
-  security_group_id        = aws_security_group.hybrid_node_sg_${eks_region_k}_${eks_name}_${hng_name}.id
-  description              = "Allow kubelet API from control plane"
-}
-
-# Allow communication from control plane to nodes (HTTPS)
-resource "aws_security_group_rule" "hybrid_node_ingress_https_from_control_plane_${eks_region_k}_${eks_name}_${hng_name}" {
-  provider = aws.${ try(hng_values.network.region, eks_region_k) }
-  
-  type                     = "ingress"
-  from_port                = 443
-  to_port                  = 443
-  protocol                 = "tcp"
-  source_security_group_id = module.eks_cluster_${eks_region_k}_${eks_name}.eks_cluster_managed_security_group_id
-  security_group_id        = aws_security_group.hybrid_node_sg_${eks_region_k}_${eks_name}_${hng_name}.id
-  description              = "Allow HTTPS from control plane"
-}
-
-# Allow nodes to communicate with each other
-resource "aws_security_group_rule" "hybrid_node_ingress_self_${eks_region_k}_${eks_name}_${hng_name}" {
-  provider = aws.${ try(hng_values.network.region, eks_region_k) }
-  
+# Allow communication from vpc to vpc via cidr as security groups from other regions are not supported
+# 2 sg are needed: one allows eks control plane vpc to hybrid node vpc, the other allows hybrid node vpc to eks control plane vpc
+resource "aws_security_group_rule" "eks_vpc_to_hybrid_node_${eks_region_k}_${eks_name}_${hng_name}" {
+  provider = aws.${hng_values.network.region}
   type              = "ingress"
   from_port         = 0
-  to_port           = 65535
+  to_port           = 0
   protocol          = "-1"
-  self              = true
+  cidr_blocks       = [jsondecode(var.vpcs_json).vpc_${eks_region_k}_${eks_values.network.vpc}.vpc_info.vpc_cidr_block]
   security_group_id = aws_security_group.hybrid_node_sg_${eks_region_k}_${eks_name}_${hng_name}.id
-  description       = "Allow nodes to communicate with each other"
+  description       = "Allow EKS control plane VPC to hybrid node VPC communication"
 }
-
-# Allow control plane to communicate with nodes
-resource "aws_security_group_rule" "control_plane_to_hybrid_nodes_${eks_region_k}_${eks_name}_${hng_name}" {
-  provider = aws.${ try(hng_values.network.region, eks_region_k) }
-  
-  type                     = "egress"
-  from_port                = 0
-  to_port                  = 65535
-  protocol                 = "-1"
-  source_security_group_id = aws_security_group.hybrid_node_sg_${eks_region_k}_${eks_name}_${hng_name}.id
-  security_group_id        = module.eks_cluster_${eks_region_k}_${eks_name}.eks_cluster_managed_security_group_id
-  description              = "Allow control plane to communicate with hybrid nodes"
+resource "aws_security_group_rule" "hybrid_node_to_eks_vpc_${eks_region_k}_${eks_name}_${hng_name}" {
+  provider = aws.${eks_region_k}
+  type              = "ingress"
+  from_port         = 0
+  to_port           = 0
+  protocol          = "-1"
+  cidr_blocks       = [jsondecode(var.vpcs_json).vpc_${hng_values.network.region}_${hng_values.network.vpc}.vpc_info.vpc_cidr_block]
+  security_group_id = module.eks_cluster_${eks_region_k}_${eks_name}.eks_cluster_managed_security_group_id
+  description       = "Allow hybrid node VPC to EKS control plane VPC communication"
 }
 
       %{ if try(hng_values.exposed-ports, "") != "" } 
         %{ for sg_rule, sg_rule_values in hng_values.exposed-ports ~}
 
 resource "aws_security_group_rule" "hybrid_node_exposed_port_${eks_region_k}_${eks_name}_${hng_name}_${sg_rule}" {
-  provider = aws.${ try(hng_values.network.region, eks_region_k) }
+  provider = aws.${hng_values.network.region}
   
   type              = "ingress"
   from_port         = ${sg_rule_values.number}
@@ -633,25 +769,25 @@ resource "aws_security_group_rule" "hybrid_node_exposed_port_${eks_region_k}_${e
         %{ endfor ~}
       %{ endif ~}
 
-# Get latest AMI
 data "aws_ssm_parameter" "hybrid_node_ami_${eks_region_k}_${eks_name}_${hng_name}" {
-  provider = aws.${ try(hng_values.network.region, eks_region_k) }
-  
-  name = "/aws/service/eks/optimized-ami/$${module.eks_cluster_${eks_region_k}_${eks_name}.eks_cluster_version}/${ try(hng_values.ami-type, "amazon-linux-2/recommended") }/image_id"
+  provider = aws.${hng_values.network.region}
+  name = "/aws/service/${ chomp(try("${hng_values.ami-ssm-name-filter}", "ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64")) }"
+#  }
 }
 
 # Autoscaling Group using CloudPosse module
 module "hybrid_node_asg_${eks_region_k}_${eks_name}_${hng_name}" {
   source  = "cloudposse/ec2-autoscale-group/aws"
-  version = "0.40.0"
+  version = "0.43.1"
 
   providers = {
-    aws = aws.${ try(hng_values.network.region, eks_region_k) }
+    aws = aws.${hng_values.network.region}
   }
 
   context = module.hybrid_node_group_label_${eks_region_k}_${eks_name}_${hng_name}.context
-  name    = "$${local.env_short}-${eks_name}-hybrid-${hng_name}-${ try(hng_values.network.region, eks_region_k) }"
+  name    = "$${local.env_short}-${eks_name}-hybrid-${hng_name}-${hng_values.network.region}"
 
+  #image_id      = data.aws_ami.hybrid_node_ami_${eks_region_k}_${eks_name}_${hng_name}.id
   image_id      = data.aws_ssm_parameter.hybrid_node_ami_${eks_region_k}_${eks_name}_${hng_name}.value
   instance_type = element([%{ for type in hng_values.instance-types ~} "${type}", %{ endfor ~}], 0)
   
@@ -670,24 +806,25 @@ module "hybrid_node_asg_${eks_region_k}_${eks_name}_${hng_name}" {
   security_group_ids        = [aws_security_group.hybrid_node_sg_${eks_region_k}_${eks_name}_${hng_name}.id]
 
       %{ if hng_values.network.subnet.kind == "public" }
+  associate_public_ip_address = true
         %{ if try(hng_values.network.availability-zones, "") != "" }
   subnet_ids = [
           %{ for az in hng_values.network.availability-zones ~}
-    element(jsondecode(var.vpcs_json).vpc_${ try(hng_values.network.region, eks_region_k) }_${hng_values.network.vpc}.subnets_info.subnet_${ try(hng_values.network.region, eks_region_k) }_${hng_values.network.vpc}_${hng_values.network.subnet.name}.az_public_subnets_map["${ try(hng_values.network.region, eks_region_k) }${az}"], 0),
+    element(jsondecode(var.vpcs_json).vpc_${hng_values.network.region}_${hng_values.network.vpc}.subnets_info.subnet_${hng_values.network.region}_${hng_values.network.vpc}_${hng_values.network.subnet.name}.az_public_subnets_map["${hng_values.network.region}${az}"], 0),
           %{ endfor ~}
   ]
         %{ else ~}
-  subnet_ids = jsondecode(var.vpcs_json).vpc_${ try(hng_values.network.region, eks_region_k) }_${hng_values.network.vpc}.subnets_info.subnet_${ try(hng_values.network.region, eks_region_k) }_${hng_values.network.vpc}_${hng_values.network.subnet.name}.public_subnet_ids
+  subnet_ids = jsondecode(var.vpcs_json).vpc_${hng_values.network.region}_${hng_values.network.vpc}.subnets_info.subnet_${hng_values.network.region}_${hng_values.network.vpc}_${hng_values.network.subnet.name}.public_subnet_ids
         %{ endif ~}
       %{ else ~}
         %{ if try(hng_values.network.availability-zones, "") != "" }
   subnet_ids = [
           %{ for az in hng_values.network.availability-zones ~}
-    element(jsondecode(var.vpcs_json).vpc_${ try(hng_values.network.region, eks_region_k) }_${hng_values.network.vpc}.subnets_info.subnet_${ try(hng_values.network.region, eks_region_k) }_${hng_values.network.vpc}_${hng_values.network.subnet.name}.az_private_subnets_map["${ try(hng_values.network.region, eks_region_k) }${az}"], 0),
+    element(jsondecode(var.vpcs_json).vpc_${hng_values.network.region}_${hng_values.network.vpc}.subnets_info.subnet_${hng_values.network.region}_${hng_values.network.vpc}_${hng_values.network.subnet.name}.az_private_subnets_map["${hng_values.network.region}${az}"], 0),
           %{ endfor ~}
   ]
         %{ else ~}
-  subnet_ids = jsondecode(var.vpcs_json).vpc_${ try(hng_values.network.region, eks_region_k) }_${hng_values.network.vpc}.subnets_info.subnet_${ try(hng_values.network.region, eks_region_k) }_${hng_values.network.vpc}_${hng_values.network.subnet.name}.private_subnet_ids
+  subnet_ids = jsondecode(var.vpcs_json).vpc_${hng_values.network.region}_${hng_values.network.vpc}.subnets_info.subnet_${hng_values.network.region}_${hng_values.network.vpc}_${hng_values.network.subnet.name}.private_subnet_ids
         %{ endif ~}
       %{ endif ~}
 
@@ -731,102 +868,87 @@ module "hybrid_node_asg_${eks_region_k}_${eks_name}_${hng_name}" {
 
 # SSM Association for hybrid node bootstrap
 resource "aws_ssm_association" "hybrid_node_bootstrap_${eks_region_k}_${eks_name}_${hng_name}" {
-  provider = aws.${ try(hng_values.network.region, eks_region_k) }
+  provider = aws.${hng_values.network.region}
   
   name = "AWS-RunShellScript"
 
   targets {
     key    = "tag:Name"
-    values = ["$${local.env_short}-${eks_name}-hybrid-${hng_name}-${ try(hng_values.network.region, eks_region_k) }"]
+    values = ["$${local.env_short}-${eks_name}-hybrid-${hng_name}-${hng_values.network.region}"]
   }
 
   parameters = {
-    commands = join("\n", [
-      "#!/bin/bash",
-      "set -ex",
-      "",
-      "# Configure AWS CLI region",
-      "export AWS_DEFAULT_REGION=${ try(hng_values.network.region, eks_region_k) }",
-      "",
-      "# Get cluster information from SSM parameters",
-      "CLUSTER_NAME=$${module.eks_cluster_${eks_region_k}_${eks_name}.eks_cluster_id}",
-      "CLUSTER_REGION=${eks_region_k}",
-      "EKS_CLUSTER_VERSION=$${module.eks_cluster_${eks_region_k}_${eks_name}.eks_cluster_version}",
-      "API_SERVER_ENDPOINT=$${module.eks_cluster_${eks_region_k}_${eks_name}.eks_cluster_endpoint}",
-      "CERT_AUTHORITY=$${module.eks_cluster_${eks_region_k}_${eks_name}.eks_cluster_certificate_authority_data}",
-      "CLUSTER_CIDR=$${module.eks_cluster_${eks_region_k}_${eks_name}.eks_cluster_service_ipv4_cidr}",
-      "",
-      "# Check if node is already bootstrapped",
-      "if systemctl is-active --quiet kubelet; then",
-      "  echo 'Node already bootstrapped'",
-      "  exit 0",
-      "fi",
-      "",
-      "# Create NodeConfig for EKS Nodes",
-      "cat > /tmp/nodeconfig.yaml <<NODECONFIG",
-      "apiVersion: node.eks.aws/v1alpha1",
-      "kind: NodeConfig",
-      "spec:",
-      "  cluster:",
-      "    name: $${CLUSTER_NAME}",
-      "    apiServerEndpoint: $${API_SERVER_ENDPOINT}",
-      "    certificateAuthority: $${CERT_AUTHORITY}",
-      "    cidr: $${CLUSTER_CIDR}",
-%{ if try(hng_values.max-pods, "") != "" ~}
-      "  kubelet:",
-      "    config:",
-      "      maxPods: ${hng_values.max-pods}",
-%{ endif ~}
-      "NODECONFIG",
-      "",
-      "# Install nodeadm if not already installed",
-      "if ! command -v nodeadm &> /dev/null; then",
-      "  echo 'Installing nodeadm...'",
-      "  curl -o /tmp/nodeadm.tar.gz https://hybrid-assets.eks.amazonaws.com/releases/latest/bin/linux/amd64/nodeadm.tar.gz",
-      "  tar -xzf /tmp/nodeadm.tar.gz -C /usr/local/bin/",
-      "  chmod +x /usr/local/bin/nodeadm",
-      "fi",
-      "",
-      "# Install EKS dependencies using nodeadm",
-      "echo 'Installing EKS dependencies...'",
-      "nodeadm install $${EKS_CLUSTER_VERSION}",
-      "",
-      "# Initialize the node",
-      "echo 'Initializing node...'",
-      "nodeadm init -c file:///tmp/nodeconfig.yaml",
-      "",
-      "# Wait for kubelet to be ready",
-      "echo 'Waiting for kubelet to become active...'",
-      "for i in {1..30}; do",
-      "  if systemctl is-active --quiet kubelet; then",
-      "    echo 'Kubelet is active'",
-      "    break",
-      "  fi",
-      "  echo \"Waiting for kubelet... ($i/30)\"",
-      "  sleep 10",
-      "done",
-      "",
-      "echo 'Hybrid node bootstrap completed successfully'"
-    ])
+    commands = <<-EOC
+      #!/bin/bash
+      set -ex
+      # Configure AWS CLI region
+      export AWS_DEFAULT_REGION=${hng_values.network.region}
+      
+      # Get cluster information from SSM parameters
+      CLUSTER_NAME=$${module.eks_cluster_${eks_region_k}_${eks_name}.eks_cluster_id}
+      CLUSTER_REGION=${eks_region_k}
+      EKS_CLUSTER_VERSION=$${module.eks_cluster_${eks_region_k}_${eks_name}.eks_cluster_version}
+      API_SERVER_ENDPOINT=$${module.eks_cluster_${eks_region_k}_${eks_name}.eks_cluster_endpoint}
+      CERT_AUTHORITY=$${module.eks_cluster_${eks_region_k}_${eks_name}.eks_cluster_certificate_authority_data}
+      CLUSTER_CIDR=$${module.eks_cluster_${eks_region_k}_${eks_name}.eks_cluster_ipv4_service_cidr}
+      
+      # Check if node is already bootstrapped
+      if systemctl is-active --quiet kubelet; then
+        echo 'Node already bootstrapped'
+        exit 0
+      fi
+
+      # Create NodeConfig for EKS Nodes
+      cat > /tmp/nodeconfig.yaml <<NODECONFIG
+      apiVersion: node.eks.aws/v1alpha1
+      kind: NodeConfig
+      spec:
+        cluster:
+          name: $${module.eks_cluster_${eks_region_k}_${eks_name}.eks_cluster_id}
+          region: ${eks_region_k}
+        hybrid:
+          ssm:
+            activationId: $${aws_ssm_activation.eks_hybrid_node_activation_${eks_region_k}_${eks_name}_${hng_name}.id}
+            activationCode: $${aws_ssm_activation.eks_hybrid_node_activation_${eks_region_k}_${eks_name}_${hng_name}.activation_code}
+        kubelet:
+          config:
+            %{ if try(hng_values.max-pods, "") != "" ~}
+            maxPods: ${hng_values.max-pods}
+            %{ endif ~}
+            failSwapOn: false
+            memorySwap:
+              swapBehavior: "${ try(hng_values.swap.behavior, "LimitedSwap") }"
+      NODECONFIG
+
+      curl -OL 'https://hybrid-assets.eks.amazonaws.com/releases/latest/bin/linux/amd64/nodeadm'
+      chmod a+x nodeadm
+      mv nodeadm /usr/local/bin/
+
+      sudo systemctl mask swap.target
+      sudo swapoff -a
+
+      nodeadm install ${eks_values.k8s-version} --credential-provider ssm
+      nodeadm init --config-source file:///tmp/nodeconfig.yaml
+
+    EOC
   }
   
   max_concurrency = "100%"
   max_errors      = "0"
 }
 
-# SSM Association for cluster join and configuration
       %{ if try(hng_values.swap, "") != "" }
         %{ if try(hng_values.swap.enabled, "") == true }
           %{ if try(hng_values.swap.size, "") != "" }
 
 resource "aws_ssm_association" "hybrid_node_enable_swap_${eks_region_k}_${eks_name}_${hng_name}" {
-  provider = aws.${ try(hng_values.network.region, eks_region_k) }
+  provider = aws.${hng_values.network.region}
   
   name = "AWS-RunShellScript"
 
   targets {
     key    = "tag:Name"
-    values = ["$${local.env_short}-${eks_name}-hybrid-${hng_name}-${ try(hng_values.network.region, eks_region_k) }"]
+    values = ["$${local.env_short}-${eks_name}-hybrid-${hng_name}-${hng_values.network.region}"]
   }
 
   parameters = {
@@ -842,7 +964,7 @@ resource "aws_ssm_association" "hybrid_node_enable_swap_${eks_region_k}_${eks_na
         exit 0
       fi
       
-      fallocate -l $${SWAP_SIZE_GB}G $SWAP_FILE
+      fallocate -l $$${SWAP_SIZE_GB}G $SWAP_FILE
       chmod 600 $SWAP_FILE
       mkswap $SWAP_FILE
       swapon $SWAP_FILE
