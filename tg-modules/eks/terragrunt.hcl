@@ -457,7 +457,7 @@ affinity:
         - key: eks.amazonaws.com/compute-type
           operator: In
           values:
-          - hybrid
+          - hybrid-ec2
 bpf:
   masquerade: true
 eni:
@@ -465,7 +465,6 @@ eni:
   updateEC2AdapterLimitViaAPI: true
   awsReleaseExcessIPs: true
   awsEnablePrefixDelegation: true
-  ec2APIEndpoint: ""
 ipam:
   mode: eni
 k8s:
@@ -491,7 +490,7 @@ operator:
           - key: eks.amazonaws.com/compute-type
             operator: In
             values:
-              - hybrid
+              - hybrid-ec2
   unmanagedPodWatcher:
     restart: false
 loadBalancer:
@@ -528,6 +527,7 @@ resource "helm_release" "${eks_region_k}_${eks_name}_cilium" {
   chart      = "${ chomp (try("${eks_values.network.hybrid-nodes.cni.chart}", "cilium")) }"
   name       = "${ chomp (try("${eks_values.network.hybrid-nodes.cni.release-name}", "cilium")) }"
   version    = "${ chomp (try("${eks_values.network.hybrid-nodes.cni.version}", "1.17.12-0")) }"
+  wait             = false
 
   values = [trimspace(data.template_file.${eks_region_k}_${eks_name}_cilium.rendered)]
 
@@ -643,13 +643,14 @@ module "eks_hybrid_node_role_${eks_region_k}_${eks_name}_${hng_name}" {
   name = "hnr-${eks_region_k}-${eks_name}-${hng_name}"
 }
 
+# this will always change so any new node gets a valid activation code
 resource "aws_ssm_activation" "eks_hybrid_node_activation_${eks_region_k}_${eks_name}_${hng_name}" {
   provider = aws.${eks_region_k}
 
   name               = "hybrid-node-${eks_region_k}-${eks_name}-${hng_name}"
   iam_role           = module.eks_hybrid_node_role_${eks_region_k}_${eks_name}_${hng_name}.name
-  registration_limit = 1000
-  expiration_date    = formatdate("YYYY-MM-DD'T'HH:mm:ss'Z'", timeadd(timestamp(), "720h")) # 30 days from now
+  registration_limit = 100
+  expiration_date    = formatdate("YYYY-MM-DD'T'HH:mm:ss'Z'", timeadd(timestamp(), "2h"))
 
 }
 
@@ -884,13 +885,16 @@ resource "aws_ssm_association" "hybrid_node_bootstrap_${eks_region_k}_${eks_name
       # Configure AWS CLI region
       export AWS_DEFAULT_REGION=${hng_values.network.region}
       
-      # Get cluster information from SSM parameters
-      CLUSTER_NAME=$${module.eks_cluster_${eks_region_k}_${eks_name}.eks_cluster_id}
-      CLUSTER_REGION=${eks_region_k}
-      EKS_CLUSTER_VERSION=$${module.eks_cluster_${eks_region_k}_${eks_name}.eks_cluster_version}
-      API_SERVER_ENDPOINT=$${module.eks_cluster_${eks_region_k}_${eks_name}.eks_cluster_endpoint}
-      CERT_AUTHORITY=$${module.eks_cluster_${eks_region_k}_${eks_name}.eks_cluster_certificate_authority_data}
-      CLUSTER_CIDR=$${module.eks_cluster_${eks_region_k}_${eks_name}.eks_cluster_ipv4_service_cidr}
+      TOKEN=$(curl -s -X PUT "http://169.254.169.254/latest/api/token" \
+        -H "X-aws-ec2-metadata-token-ttl-seconds: 21600")
+      INSTANCE_TYPE=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" \
+        http://169.254.169.254/latest/meta-data/instance-type)
+      REGION=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" \
+        http://169.254.169.254/latest/meta-data/placement/region)
+      AZ=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" \
+        http://169.254.169.254/latest/meta-data/placement/availability-zone)
+      AZ_ID=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" \
+        http://169.254.169.254/latest/meta-data/placement/availability-zone-id)
       
       # Check if node is already bootstrapped
       if systemctl is-active --quiet kubelet; then
@@ -911,10 +915,26 @@ resource "aws_ssm_association" "hybrid_node_bootstrap_${eks_region_k}_${eks_name
             activationId: $${aws_ssm_activation.eks_hybrid_node_activation_${eks_region_k}_${eks_name}_${hng_name}.id}
             activationCode: $${aws_ssm_activation.eks_hybrid_node_activation_${eks_region_k}_${eks_name}_${hng_name}.activation_code}
         kubelet:
+          # add labels
+          flags:
+            - --node-labels=eks.amazonaws.com/compute-type=hybrid
+            %{~ if try(hng_values.node-kubernetes-io-role, "") != "" ~}
+            - --node-labels=node.kubernetes.io/role=${hng_values.node-kubernetes-io-role}
+            %{~ else ~}
+            - --node-labels=node.kubernetes.io/role=${hng_name}
+            %{~ endif ~}
+            - --node-labels=node.kubernetes.io/instance-type=$INSTANCE_TYPE
+            - --node-labels=topology.kubernetes.io/region=$REGION
+            - --node-labels=topology.kubernetes.io/zone=$AZ
+            - --node-labels=topology.ebs.csi.aws.com/zone=$AZ
+            - --node-labels=topology.k8s.aws/zone-id=$AZ_ID
+            - --node-labels=eks.amazonaws.com/nodegroup-image=$${data.aws_ssm_parameter.hybrid_node_ami_${eks_region_k}_${eks_name}_${hng_name}.value}
+            - --node-labels=eks.amazonaws.com/sourceLaunchTemplateId=$${module.hybrid_node_asg_${eks_region_k}_${eks_name}_${hng_name}.launch_template_id}
+            - --node-labels=eks.amazonaws.com/compute-type=hybrid-ec2
           config:
-            %{ if try(hng_values.max-pods, "") != "" ~}
+            %{~ if try(hng_values.max-pods, "") != "" ~}
             maxPods: ${hng_values.max-pods}
-            %{ endif ~}
+            %{~ endif ~}
             failSwapOn: false
             memorySwap:
               swapBehavior: "${ try(hng_values.swap.behavior, "LimitedSwap") }"
