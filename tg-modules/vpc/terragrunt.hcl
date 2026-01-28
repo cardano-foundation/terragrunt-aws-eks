@@ -144,6 +144,28 @@ resource "aws_route" "peering_route_${vpc_region_k}_${vpc_name}_${sn_name}_publi
           %{ endif ~}
         %{ endfor ~}
 
+# Add routes from ${peering_values.peer-vpc} subnets to ${vpc_name}
+        %{ for peer_sn_name, peer_sn_values in try(local.config.network.vpc.regions[peering_values.peer-region][peering_values.peer-vpc].subnets, { } ) ~}
+          %{ if peer_sn_values.private_subnets_enabled }
+resource "aws_route" "peering_route_${peering_values.peer-region}_${peering_values.peer-vpc}_${peer_sn_name}_private_to_${vpc_name}" {
+  provider = aws.${peering_values.peer-region}
+  count = length(module.subnet_${peering_values.peer-region}_${peering_values.peer-vpc}_${peer_sn_name}.private_route_table_ids)
+  route_table_id            = module.subnet_${peering_values.peer-region}_${peering_values.peer-vpc}_${peer_sn_name}.private_route_table_ids[count.index]
+  destination_cidr_block    = module.vpc_${vpc_region_k}_${vpc_name}.vpc_cidr_block
+  vpc_peering_connection_id = aws_vpc_peering_connection.peering_${vpc_region_k}_${vpc_name}_to_${peering_values.peer-vpc}.id
+}
+          %{ endif ~}
+          %{ if peer_sn_values.public_subnets_enabled }
+resource "aws_route" "peering_route_${peering_values.peer-region}_${peering_values.peer-vpc}_${peer_sn_name}_public_to_${vpc_name}" {
+  provider = aws.${peering_values.peer-region}
+  count = length(module.subnet_${peering_values.peer-region}_${peering_values.peer-vpc}_${peer_sn_name}.public_route_table_ids)
+  route_table_id            = module.subnet_${peering_values.peer-region}_${peering_values.peer-vpc}_${peer_sn_name}.public_route_table_ids[count.index]
+  destination_cidr_block    = module.vpc_${vpc_region_k}_${vpc_name}.vpc_cidr_block
+  vpc_peering_connection_id = aws_vpc_peering_connection.peering_${vpc_region_k}_${vpc_name}_to_${peering_values.peer-vpc}.id
+}
+          %{ endif ~}
+        %{ endfor ~}
+
       %{ endfor ~}
     %{ endif ~}
   %{ endfor ~}
