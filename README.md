@@ -113,3 +113,5 @@ aws eks update-kubeconfig \
   --name ${CLUSTER_NAME} \
   --kubeconfig ~/.kube/${CLUSTER_NAME}-${AWS_REGION}.yaml
 ```
+
+kubectl get csr | grep Pending | awk '{print $1}' | xargs kubectl certificate approve

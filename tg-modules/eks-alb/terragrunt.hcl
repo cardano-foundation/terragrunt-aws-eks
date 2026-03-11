@@ -48,6 +48,8 @@ inputs = {
   eks_clusters_json = dependency.eks.outputs.eks_clusters
   eks_node_groups_json = dependency.eks.outputs.eks_node_groups
   eks_node_groups_sg_json = dependency.eks.outputs.eks_node_groups_sg
+  eks_hybrid_node_groups_json = dependency.eks.outputs.eks_hybrid_node_groups
+  eks_hybrid_node_groups_sg_json = dependency.eks.outputs.eks_hybrid_node_groups_sg
   vpcs_json = dependency.vpc.outputs.vpcs
 
 }
@@ -68,6 +70,12 @@ locals {
   %{ for eks_name, eks_values in eks_region_v ~}
     
     "${local.config.general.env-short}.${eks_name}.${eks_region_k}" = substr(uuidv5("dns","${local.config.general.env-short}.${eks_region_k}.${eks_name}"), 0, 31)
+
+    %{ for hng_name, hng_values in try(eks_values.hybrid-node-groups, {}) ~}
+
+    "${local.config.general.env-short}.${eks_name}.${hng_values.network.region}" = substr(uuidv5("dns","${local.config.general.env-short}.${hng_values.network.region}.${eks_name}"), 0, 31)
+
+    %{ endfor ~}
 
   %{ endfor ~}
 
@@ -156,6 +164,77 @@ module "alb_${eks_region_k}_${eks_name}" {
 
 }
 
+    %{ for hng_name, hng_values in try(eks_values.hybrid-node-groups, {}) ~}
+
+module "acm_request_certificate_${hng_values.network.region}_${eks_name}_${hng_name}" {
+
+  providers = {
+    aws = aws.${hng_values.network.region}
+  }
+
+  source = "cloudposse/acm-request-certificate/aws"
+  version = "0.16.3"
+  zone_name                         = "${ chomp(try(local.config.network.route53.zones.default.tld, "cluster.local")) }"
+  domain_name                       = substr(format("%s.%s", "$${local.uuid_domain_names["${local.config.general.env-short}.${eks_name}.${hng_values.network.region}"]}", "${local.config.network.route53.zones.default.tld}"), -64, -1)
+  process_domain_validation_options = true
+  ttl                               = "60"
+  subject_alternative_names         = distinct([
+    "$${local.main_app_hostname}.${local.config.network.route53.zones.default.tld}",
+    "*.$${local.main_app_hostname}.${local.config.network.route53.zones.default.tld}",
+
+    "${local.config.general.env-short}.${eks_name}.${local.config.network.route53.zones.default.tld}",
+    "*.${local.config.general.env-short}.${eks_name}.${local.config.network.route53.zones.default.tld}",
+
+    "${local.config.general.env-short}.${eks_name}.global.${local.config.network.route53.zones.default.tld}",
+    "*.${local.config.general.env-short}.${eks_name}.global.${local.config.network.route53.zones.default.tld}",
+
+    "${local.config.general.env-short}.${eks_name}.${hng_values.network.region}.${local.config.network.route53.zones.default.tld}",
+    "*.${local.config.general.env-short}.${eks_name}.${hng_values.network.region}.${local.config.network.route53.zones.default.tld}"
+
+%{ for alb_hostname in try(local.config.network.alb.acm.extra-fqdn, { } ) ~}
+    , "${alb_hostname}"
+%{ endfor ~}
+  ])
+
+}
+
+module "alb_hybrid_${hng_values.network.region}_${eks_name}_${hng_name}" {
+  providers = {
+    aws = aws.${hng_values.network.region}
+  }
+  source = "./tf-module"
+  # cluster name is used for alb name, so we do a bit of workaround here
+  cluster_name              = "${local.config.general.env-short}-${eks_name}-${hng_values.network.region}"
+  subnet_ids_list = concat(
+    %{ if hng_values.network.subnet.kind == "public" }
+    jsondecode(var.vpcs_json).vpc_${hng_values.network.region}_${hng_values.network.vpc}.subnets_info.subnet_${hng_values.network.region}_${hng_values.network.vpc}_${hng_values.network.subnet.name}.${hng_values.network.subnet.kind}_subnet_ids,
+    %{ endif ~}
+  )
+
+  vpcid                     = jsondecode(var.vpcs_json).vpc_${hng_values.network.region}_${hng_values.network.vpc}.vpc_info.vpc_id
+  autoscale_group_names     = toset( [
+    %{ if try(hng_values.exposed-ports, "") != "" }
+    jsondecode(var.eks_hybrid_node_groups_json).eks_hybrid_node_group_${hng_values.network.region}_${eks_name}_${hng_name}.asg_info.autoscaling_group_name,
+    %{ endif ~}
+  ] )
+  cluster_security_group_ids = toset( [
+    %{ if try(hng_values.exposed-ports, "") != "" }
+    jsondecode(var.eks_hybrid_node_groups_sg_json).eks_hybrid_node_group_sg_${hng_values.network.region}_${eks_name}_${hng_name}.hng_sg_info.id,
+    %{ endif ~}
+  ] )
+  tags                      = {}
+  node_port                 = ${ chomp(try(hng_values.alb.node-port, 30443)) }
+  node_port_protocol        = "${ chomp(try(hng_values.alb.node-port-protocol, "HTTPS")) }"
+  node_port_protocol_version = "${ chomp(try(hng_values.alb.node-port-protocol-version, "HTTP1")) }"
+  enable_http               = ${ chomp(try(hng_values.alb.enable-http, true)) }
+  enable_https              = ${ chomp(try(hng_values.alb.enable-https, true)) }
+  http_redirect             = ${ chomp(try(hng_values.alb.http-redirect, true)) }
+  certificate_arn           = module.acm_request_certificate_${hng_values.network.region}_${eks_name}_${hng_name}.arn
+  internal                  = ${ chomp(try(hng_values.alb.internal, false)) }
+}
+  
+    %{ endfor ~}
+    
   %{ endfor ~}
 
 %{ endfor ~}
@@ -169,20 +248,38 @@ generate "dynamic-outputs" {
 
 output eks_albs {
 
-    value = merge(
+  value = merge(
 
-%{ for eks_region_k, eks_region_v in try(local.config.eks.regions, { } ) ~}
+%{~ for eks_region_k, eks_region_v in try(local.config.eks.regions, { } ) ~}
 
-  %{ for eks_name, eks_values in eks_region_v ~}
-      {
-        for key, value in module.alb_${eks_region_k}_${eks_name}[*]:
-            "eks_alb_${eks_region_k}_${eks_name}" => { "alb_info" = value }
-      },
+  %{~ for eks_name, eks_values in eks_region_v ~}
+    {
+      for key, value in module.alb_${eks_region_k}_${eks_name}[*]:
+          "eks_alb_${eks_region_k}_${eks_name}" => { "alb_info" = value }
+    },
 
-  %{ endfor ~}
+  %{~ endfor ~}
 
-%{ endfor ~}
-   )
+%{~ endfor ~}
+  )
+}
+
+output eks_hybrid_albs {
+
+  value = merge(
+%{~ for eks_region_k, eks_region_v in try(local.config.eks.regions, { } ) ~}
+
+  %{~ for eks_name, eks_values in eks_region_v ~}
+
+    %{~ for hng_name, hng_values in try(eks_values.hybrid-node-groups, {}) ~} 
+    {
+      for key, value in module.alb_hybrid_${hng_values.network.region}_${eks_name}_${hng_name}[*]:
+          "eks_hybrid_alb_${hng_values.network.region}_${eks_name}_${hng_name}" => { "alb_info" = value }
+    },
+    %{~ endfor ~}
+  %{~ endfor ~}
+%{~ endfor ~}
+  )
 }
 
 EOF
