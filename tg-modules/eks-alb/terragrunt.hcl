@@ -49,7 +49,6 @@ inputs = {
   eks_node_groups_json = dependency.eks.outputs.eks_node_groups
   eks_node_groups_sg_json = dependency.eks.outputs.eks_node_groups_sg
   eks_hybrid_node_groups_json = dependency.eks.outputs.eks_hybrid_node_groups
-  eks_hybrid_node_groups_sg_json = dependency.eks.outputs.eks_hybrid_node_groups_sg
   vpcs_json = dependency.vpc.outputs.vpcs
 
 }
@@ -214,12 +213,12 @@ module "alb_hybrid_${hng_values.network.region}_${eks_name}_${hng_name}" {
   vpcid                     = jsondecode(var.vpcs_json).vpc_${hng_values.network.region}_${hng_values.network.vpc}.vpc_info.vpc_id
   autoscale_group_names     = toset( [
     %{ if try(hng_values.exposed-ports, "") != "" }
-    jsondecode(var.eks_hybrid_node_groups_json).eks_hybrid_node_group_${hng_values.network.region}_${eks_name}_${hng_name}.asg_info.autoscaling_group_name,
+    jsondecode(var.eks_hybrid_node_groups_json).eks_hybrid_node_group_${eks_region_k}_${eks_name}_${hng_name}.asg_name,
     %{ endif ~}
   ] )
   cluster_security_group_ids = toset( [
     %{ if try(hng_values.exposed-ports, "") != "" }
-    jsondecode(var.eks_hybrid_node_groups_sg_json).eks_hybrid_node_group_sg_${hng_values.network.region}_${eks_name}_${hng_name}.hng_sg_info.id,
+    jsondecode(var.eks_hybrid_node_groups_json).eks_hybrid_node_group_${eks_region_k}_${eks_name}_${hng_name}.security_group_id,
     %{ endif ~}
   ] )
   tags                      = {}
