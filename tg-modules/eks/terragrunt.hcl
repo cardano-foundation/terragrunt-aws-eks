@@ -578,7 +578,7 @@ resource "helm_release" "${eks_region_k}_${eks_name}_cilium_hybrid" {
     binary_path = "$${path.module}/helm-cilium-hybrid-post-renderer.sh"
   }
 
-  depends_on = [resource.null_resource.${eks_region_k}_${eks_name}_delete_kube_proxy]
+  depends_on = [resource.null_resource.${eks_region_k}_${eks_name}_delete_daemonsets]
 
 }
 
@@ -679,7 +679,7 @@ resource "helm_release" "${eks_region_k}_${eks_name}_cilium" {
 
   values = [trimspace(data.template_file.${eks_region_k}_${eks_name}_cilium.rendered)]
 
-  depends_on = [resource.null_resource.${eks_region_k}_${eks_name}_delete_kube_proxy]
+  depends_on = [resource.null_resource.${eks_region_k}_${eks_name}_delete_daemonsets]
 
 }
 
