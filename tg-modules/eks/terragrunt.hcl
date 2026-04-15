@@ -486,104 +486,6 @@ resource "aws_iam_role_policy_attachment" "ebs_policy_${eks_region_k}_${eks_name
 
     %{ endfor ~}
 
-    %{ if try(eks_values.hybrid-node-groups, "") != "" }
-
-data "template_file" "${eks_region_k}_${eks_name}_cilium_hybrid" {
-  template = <<EOT
-ingressController:
-  secretsNamespace:
-    name: cilium-hybrid-secrets
-gatewayAPI:
-  secretsNamespace:
-    name: cilium-hybrid-secrets
-envoyConfig:
-  secretsNamespace:
-   name: cilium-hybrid-secrets
-tls:
-  secretsNamespace:
-    name: cilium-hybrid-secrets
-k8sServiceHost: $${replace(module.eks_cluster_${eks_region_k}_${eks_name}.eks_cluster_endpoint, "https://", "")}
-k8sServicePort: 443
-nodeSelector:
-  eks.amazonaws.com/compute-type: hybrid-ec2
-mtu: 8951
-devices: "ens+"
-ipv4NativeRoutingCIDR: 10.128.0.0/9
-bpf:
-  hostLegacyRouting: true
-  hostRoutingMTU: 8951
-  masquerade: true
-#  hostRoutingMTU: 9001
-extraArgs:
-  - --enable-ipv4-masquerade=true
-eni:
-  enabled: true
-  updateEC2AdapterLimitViaAPI: true
-  awsReleaseExcessIPs: true
-  awsEnablePrefixDelegation: true
-nodeinit:
-  enabled: true
-  nodeSelector:
-    eks.amazonaws.com/compute-type: hybrid-ec2
-ipam:
-  mode: eni
-  operator:
-    clusterPoolIPv4PodCIDRList: [$${module.eks_cluster_eu-west-1_cf-idw.eks_cluster_ipv4_service_cidr}]
-k8s:
- requireIPv4PodCIDR: false
-routingMode: native
-autoDirectNodeRoutes: true
-endpointRoutes:
-  enabled: true
-nodePort:
-  enabled: true
-loadBalancer:
-  serviceTopology: true
-operator:
-  extraArgs:
-    - --aws-enable-prefix-delegation
-  image:
-    repository: cilium/operator
-    # replace suffix -[0-9] from the cni version as docker images dont have them
-    tag: "$${replace("v${ chomp(try("${eks_values.network.hybrid-nodes.cni.version}", "1.18.5-0")) }", "/-[0-9]+$/", "")}"
-  nodeSelector:
-    eks.amazonaws.com/compute-type: hybrid-ec2
-  unmanagedPodWatcher:
-    restart: false
-loadBalancer:
-  serviceTopology: true
-kubeProxyReplacement: true
-envoy:
-  enabled: true
-  nodeSelector:
-    eks.amazonaws.com/compute-type: hybrid-ec2
-EOT
-
-}
-
-# deployment for hybrid nodes
-resource "helm_release" "${eks_region_k}_${eks_name}_cilium_hybrid" {
-  provider   = helm.${eks_region_k}_${eks_name}
-  repository = "${ chomp (try("${eks_values.network.hybrid-nodes.cni.repository}", "oci://public.ecr.aws/eks/cilium")) }"
-  namespace  = "cilium-hybrid"
-  create_namespace = true
-  chart      = "${ chomp (try("${eks_values.network.hybrid-nodes.cni.chart}", "cilium")) }"
-  name       = "${ chomp (try("${eks_values.network.hybrid-nodes.cni.release-name}", "cilium")) }-hybrid"
-  version    = "${ chomp (try("${eks_values.network.hybrid-nodes.cni.version}", "1.18.5-0")) }"
-  wait             = false
-
-  values = [trimspace(data.template_file.${eks_region_k}_${eks_name}_cilium_hybrid.rendered)]
-
-  postrender = {
-    binary_path = "$${path.module}/helm-cilium-hybrid-post-renderer.sh"
-  }
-
-  depends_on = [resource.null_resource.${eks_region_k}_${eks_name}_delete_daemonsets]
-
-}
-
-    %{ endif ~}
-
 # kube-proxy will be replaced by cilium, so we need to delete the kube-proxy daemonset if it exists to avoid conflicts
 # also aws-node needs to be removed to avoid cni conflicts with cilium
 
@@ -683,12 +585,47 @@ resource "helm_release" "${eks_region_k}_${eks_name}_cilium" {
 
 }
 
+    %{ if try(eks_values.hybrid-node-groups, "") != "" }
+
+resource "aws_security_group_rule" "vpc_cidrs_for_eks_control_plane_${eks_region_k}_${eks_name}" {
+  provider = aws.${eks_region_k}
+  type              = "ingress"
+  from_port         = 0
+  to_port           = 0
+  protocol          = "-1"
+  cidr_blocks       = [
+    %{ for hng_name, hng_values in eks_values.hybrid-node-groups ~}
+      jsondecode(var.vpcs_json).vpc_${hng_values.network.region}_${hng_values.network.vpc}.vpc_info.vpc_cidr_block,
+    %{ endfor ~}
+  ]
+  security_group_id = module.eks_cluster_${eks_region_k}_${eks_name}.eks_cluster_managed_security_group_id
+  description       = "Allow hybrid nodegroups VPC to EKS control plane VPC communication"
+}
+    %{ endif ~} 
+
     %{ for hng_name, hng_values in try(eks_values.hybrid-node-groups, {}) ~}
 
 # ========================================
 # Hybrid Node Group: ${hng_name}
 # Region: ${hng_values.network.region}
 # ========================================
+
+# Allow traffic between hybrid node groups' and eks control plane vpcs' cidr blocks
+resource "aws_security_group_rule" "vpc_cidrs_for_hybrid_nodes_${eks_region_k}_${eks_name}_${hng_name}" {
+  provider = aws.${hng_values.network.region}
+  type              = "ingress"
+  from_port         = 0
+  to_port           = 0
+  protocol          = "-1"
+  cidr_blocks       = [
+    jsondecode(var.vpcs_json).vpc_${eks_region_k}_${eks_values.network.vpc}.vpc_info.vpc_cidr_block,
+    %{ for hng_name, hng_values in eks_values.hybrid-node-groups ~}
+      jsondecode(var.vpcs_json).vpc_${hng_values.network.region}_${hng_values.network.vpc}.vpc_info.vpc_cidr_block,
+    %{ endfor ~}
+  ]
+  security_group_id = aws_security_group.hybrid_node_sg_${eks_region_k}_${eks_name}_${hng_name}.id
+  description       = "Allow traffic between hybrid nodegroups and eks VPCs"
+}
 
 module "hybrid_node_group_label_${eks_region_k}_${eks_name}_${hng_name}" {
 
@@ -881,29 +818,6 @@ resource "aws_security_group_rule" "hybrid_node_egress_${eks_region_k}_${eks_nam
   security_group_id = aws_security_group.hybrid_node_sg_${eks_region_k}_${eks_name}_${hng_name}.id
 }
 
-# Allow communication from vpc to vpc via cidr as security groups from other regions are not supported
-# 2 sg are needed: one allows eks control plane vpc to hybrid node vpc, the other allows hybrid node vpc to eks control plane vpc
-resource "aws_security_group_rule" "eks_vpc_to_hybrid_node_${eks_region_k}_${eks_name}_${hng_name}" {
-  provider = aws.${hng_values.network.region}
-  type              = "ingress"
-  from_port         = 0
-  to_port           = 0
-  protocol          = "-1"
-  cidr_blocks       = [jsondecode(var.vpcs_json).vpc_${eks_region_k}_${eks_values.network.vpc}.vpc_info.vpc_cidr_block]
-  security_group_id = aws_security_group.hybrid_node_sg_${eks_region_k}_${eks_name}_${hng_name}.id
-  description       = "Allow EKS control plane VPC to hybrid node VPC communication"
-}
-resource "aws_security_group_rule" "hybrid_node_to_eks_vpc_${eks_region_k}_${eks_name}_${hng_name}" {
-  provider = aws.${eks_region_k}
-  type              = "ingress"
-  from_port         = 0
-  to_port           = 0
-  protocol          = "-1"
-  cidr_blocks       = [jsondecode(var.vpcs_json).vpc_${hng_values.network.region}_${hng_values.network.vpc}.vpc_info.vpc_cidr_block]
-  security_group_id = module.eks_cluster_${eks_region_k}_${eks_name}.eks_cluster_managed_security_group_id
-  description       = "Allow hybrid node VPC to EKS control plane VPC communication"
-}
-
       %{ if try(hng_values.exposed-ports, "") != "" } 
         %{ for sg_rule, sg_rule_values in hng_values.exposed-ports ~}
 
@@ -933,7 +847,7 @@ module "hybrid_node_asg_${eks_region_k}_${eks_name}_${hng_name}" {
   version = "0.43.1"
 
   # depends on cilium_hybrid setup
-  depends_on = [helm_release.${eks_region_k}_${eks_name}_cilium_hybrid]
+  depends_on = [helm_release.${eks_region_k}_${eks_name}_${hng_name}_cilium_hybrid]
 
   providers = {
     aws = aws.${hng_values.network.region}
@@ -1022,6 +936,103 @@ module "hybrid_node_asg_${eks_region_k}_${eks_name}_${hng_name}" {
 
 }
 
+data "template_file" "${eks_region_k}_${eks_name}_${hng_name}_cilium_hybrid" {
+  template = <<EOT
+ingressController:
+  secretsNamespace:
+    name: cilium-hybrid-${hng_name}-secrets
+gatewayAPI:
+  secretsNamespace:
+    name: cilium-hybrid-${hng_name}-secrets
+envoyConfig:
+  secretsNamespace:
+    name: cilium-hybrid-${hng_name}-secrets
+tls:
+  secretsNamespace:
+    name: cilium-hybrid-${hng_name}-secrets
+k8sServiceHost: $${replace(module.eks_cluster_${eks_region_k}_${eks_name}.eks_cluster_endpoint, "https://", "")}
+k8sServicePort: 443
+nodeSelector:
+  eks.amazonaws.com/nodegroup-name: ${hng_name}
+mtu: 8951
+devices: "ens+"
+ipv4NativeRoutingCIDR: 10.128.0.0/9
+bpf:
+  hostLegacyRouting: true
+  hostRoutingMTU: 8951
+  masquerade: true
+#  hostRoutingMTU: 9001
+extraArgs:
+  - --enable-ipv4-masquerade=true
+eni:
+  enabled: true
+  updateEC2AdapterLimitViaAPI: true
+  awsReleaseExcessIPs: true
+  awsEnablePrefixDelegation: true
+nodeinit:
+  enabled: true
+  nodeSelector:
+    eks.amazonaws.com/nodegroup-name: ${hng_name}
+ipam:
+  mode: eni
+  operator:
+    clusterPoolIPv4PodCIDRList: [$${module.eks_cluster_eu-west-1_cf-idw.eks_cluster_ipv4_service_cidr}]
+k8s:
+ requireIPv4PodCIDR: false
+routingMode: native
+autoDirectNodeRoutes: true
+endpointRoutes:
+  enabled: true
+nodePort:
+  enabled: true
+loadBalancer:
+  serviceTopology: true
+operator:
+  extraArgs:
+    - --aws-enable-prefix-delegation
+  image:
+    repository: cilium/operator
+    # replace suffix -[0-9] from the cni version as docker images dont have them
+    tag: "$${replace("v${ chomp(try("${eks_values.network.hybrid-nodes.cni.version}", "1.18.5-0")) }", "/-[0-9]+$/", "")}"
+  nodeSelector:
+    eks.amazonaws.com/nodegroup-name: ${hng_name}
+  unmanagedPodWatcher:
+    restart: false
+loadBalancer:
+  serviceTopology: true
+kubeProxyReplacement: true
+envoy:
+  enabled: true
+  nodeSelector:
+    eks.amazonaws.com/nodegroup-name: ${hng_name}
+EOT
+
+}
+
+# deployment for hybrid nodes
+resource "helm_release" "${eks_region_k}_${eks_name}_${hng_name}_cilium_hybrid" {
+  provider   = helm.${eks_region_k}_${eks_name}
+  repository = "${ chomp (try("${eks_values.network.hybrid-nodes.cni.repository}", "oci://public.ecr.aws/eks/cilium")) }"
+  namespace  = "cilium-hybrid-${hng_name}"
+  create_namespace = true
+  chart      = "${ chomp (try("${eks_values.network.hybrid-nodes.cni.chart}", "cilium")) }"
+  name       = "${ chomp (try("${eks_values.network.hybrid-nodes.cni.release-name}", "cilium")) }-hybrid-${hng_name}"
+  version    = "${ chomp (try("${eks_values.network.hybrid-nodes.cni.version}", "1.18.5-0")) }"
+  wait             = false
+
+  values = [trimspace(data.template_file.${eks_region_k}_${eks_name}_${hng_name}_cilium_hybrid.rendered)]
+
+  postrender = {
+    binary_path = "$${path.module}/helm-cilium-hybrid-post-renderer.sh"
+    args = [
+      "${hng_name}"
+    ]
+  }
+
+  depends_on = [resource.null_resource.${eks_region_k}_${eks_name}_delete_daemonsets]
+
+}
+
 # SSM Association for hybrid node bootstrap
 resource "aws_ssm_association" "hybrid_node_bootstrap_${eks_region_k}_${eks_name}_${hng_name}" {
   provider = aws.${hng_values.network.region}
@@ -1083,6 +1094,7 @@ resource "aws_ssm_association" "hybrid_node_bootstrap_${eks_region_k}_${eks_name
             - --node-labels=topology.kubernetes.io/zone=$AZ
             - --node-labels=topology.ebs.csi.aws.com/zone=$AZ
             - --node-labels=topology.k8s.aws/zone-id=$AZ_ID
+            - --node-labels=eks.amazonaws.com/nodegroup-name=${hng_name}
             - --node-labels=eks.amazonaws.com/nodegroup-image=$${data.aws_ssm_parameter.hybrid_node_ami_${eks_region_k}_${eks_name}_${hng_name}.value}
             - --node-labels=eks.amazonaws.com/sourceLaunchTemplateId=$${module.hybrid_node_asg_${eks_region_k}_${eks_name}_${hng_name}.launch_template_id}
             - --node-labels=eks.amazonaws.com/compute-type=hybrid-ec2
