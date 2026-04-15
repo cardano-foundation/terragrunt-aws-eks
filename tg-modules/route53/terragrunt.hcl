@@ -123,16 +123,16 @@ resource "aws_route53_record" "rr_global_${eks_region_k}_${eks_name}" {
 
 }
 
-    %{~ endfor ~}
+      %{~ for eks_name, eks_values in try(eks_region_v, { } ) ~}
 
-    %{~ for hng_name, hng_values in try(eks_values.hybrid-node-groups, {}) ~}
+        %{~ for hng_name, hng_values in try(eks_values.hybrid-node-groups, {}) ~}
     
 resource "aws_route53_record" "rr_global_${hng_values.network.region}_${eks_name}_${hng_name}" {
   zone_id = data.aws_route53_zone.service_zone.zone_id
-  name    = "${hostname}.${local.config.general.env-short}.${eks_name}.global.${local.config.network.route53.zones.default.tld}"
+  name    = "${local.config.general.env-short}.${eks_name}.global.${local.config.network.route53.zones.default.tld}"
   type    = "A"
 
-  set_identifier = "eks_${eks_region_k}_${eks_name}"
+  set_identifier = "eks_${eks_region_k}_${eks_name}-hng_${hng_values.network.region}_${hng_name}"
 
   alias {
     name                   = try(jsondecode(var.eks_hybrid_alb_json).eks_hybrid_alb_${hng_values.network.region}_${eks_name}_${hng_name}.alb_info.dns_name, "")
@@ -145,11 +145,25 @@ resource "aws_route53_record" "rr_global_${hng_values.network.region}_${eks_name
   }
 }
   
+        %{~ endfor ~}
+      %{~ endfor ~}
     %{~ endfor ~}
 
   %{~ for hostname in try(local.config.alb-dns-aliases, [] ) ~}
 
     %{~ for eks_region_k, eks_region_v in try(local.config.eks.regions, { } ) ~}
+
+resource "aws_route53_health_check" "rr_global_eks_${eks_region_k}_${eks_name}_${ replace("${hostname}", ".", "_")}_hc" {
+  fqdn                            = try(jsondecode(var.eks_alb_json).eks_alb_${eks_region_k}_${eks_name}.alb_info.dns_name, "")
+  port                            = 443
+  type                            = "HTTPS"
+  resource_path                   = "/not-found"
+  failure_threshold               = 3
+  request_interval                = 10
+  measure_latency                 = false
+  invert_healthcheck              = true  # This makes 404 (unhealthy) appear as healthy, as we only want to know if traefik is responding at all, and it will respond to /not-found with a 404 if it's up
+
+}
 
 resource "aws_route53_record" "rr_global_eks_${eks_region_k}_${eks_name}_${ replace("${hostname}", ".", "_")}" {
   zone_id = data.aws_route53_zone.service_zone.zone_id
@@ -157,6 +171,8 @@ resource "aws_route53_record" "rr_global_eks_${eks_region_k}_${eks_name}_${ repl
   type    = "A"
 
   set_identifier = "eks_${eks_region_k}_${eks_name}_${ replace("${hostname}", ".", "_")}"
+
+  health_check_id = aws_route53_health_check.rr_global_eks_${eks_region_k}_${eks_name}_${ replace("${hostname}", ".", "_")}_hc.id
 
   alias {
     name                   = try(jsondecode(var.eks_alb_json).eks_alb_${eks_region_k}_${eks_name}.alb_info.dns_name, "")
@@ -169,15 +185,29 @@ resource "aws_route53_record" "rr_global_eks_${eks_region_k}_${eks_name}_${ repl
   }
 
 }
-    %{~ endfor ~}
+      %{~ for eks_name, eks_values in try(eks_region_v, { } ) ~}
+        %{~ for hng_name, hng_values in try(eks_values.hybrid-node-groups, {}) ~}
 
-    %{~ for hng_name, hng_values in try(eks_values.hybrid-node-groups, {}) ~}
+resource "aws_route53_health_check" "rr_global_eks_${hng_values.network.region}_${eks_name}_${hng_name}_${ replace("${hostname}", ".", "_")}_hc" {
+  fqdn                            = try(jsondecode(var.eks_hybrid_alb_json).eks_hybrid_alb_${hng_values.network.region}_${eks_name}_${hng_name}.alb_info.dns_name, "")
+  port                            = 443
+  type                            = "HTTPS"
+  resource_path                   = "/not-found"
+  failure_threshold               = 3
+  request_interval                = 10
+  measure_latency                 = false
+  invert_healthcheck              = true  # This makes 404 (unhealthy) appear as healthy, as we only want to know if traefik is responding at all, and it will respond to /not-found with a 404 if it's up
+
+}
+
 resource "aws_route53_record" "rr_global_eks_${hng_values.network.region}_${eks_name}_${hng_name}_${ replace("${hostname}", ".", "_")}" {
   zone_id = data.aws_route53_zone.service_zone.zone_id
   name    = "${hostname}.${local.config.general.env-short}.${eks_name}.global.${local.config.network.route53.zones.default.tld}"
   type    = "A"
 
-  set_identifier = "eks_${eks_region_k}_${eks_name}_${ replace("${hostname}", ".", "_")}"
+  set_identifier = "eks_${eks_region_k}_${eks_name}_${ replace("${hostname}", ".", "_")}-hng_${hng_values.network.region}_${hng_name}"
+
+  health_check_id = aws_route53_health_check.rr_global_eks_${hng_values.network.region}_${eks_name}_${hng_name}_${ replace("${hostname}", ".", "_")}_hc.id
 
   alias {
     name                   = try(jsondecode(var.eks_hybrid_alb_json).eks_hybrid_alb_${hng_values.network.region}_${eks_name}_${hng_name}.alb_info.dns_name, "")
@@ -189,6 +219,8 @@ resource "aws_route53_record" "rr_global_eks_${hng_values.network.region}_${eks_
     region = "${hng_values.network.region}"
   }
 }
+        %{~ endfor ~}
+      %{~ endfor ~}
     %{~ endfor ~}
 
   %{~ endfor ~}
