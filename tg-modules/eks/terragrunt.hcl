@@ -538,6 +538,9 @@ ipam:
   mode: eni
   operator:
     clusterPoolIPv4PodCIDRList: [$${module.eks_cluster_eu-west-1_cf-idw.eks_cluster_ipv4_service_cidr}]
+  nodeSpec:
+    ipamMinAllocate: 32
+    ipamPreAllocate: 32
 k8s:
  requireIPv4PodCIDR: false
 routingMode: native
@@ -977,6 +980,9 @@ ipam:
   mode: eni
   operator:
     clusterPoolIPv4PodCIDRList: [$${module.eks_cluster_eu-west-1_cf-idw.eks_cluster_ipv4_service_cidr}]
+  nodeSpec:
+    ipamMinAllocate: 32
+    ipamPreAllocate: 32
 k8s:
  requireIPv4PodCIDR: false
 routingMode: native
