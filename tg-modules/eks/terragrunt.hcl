@@ -178,7 +178,7 @@ module "node_group_label_${eks_region_k}_${eks_name}_${eng_name}" {
 
   stage      = ""
   namespace  = ""
-  name       = "$${local.env_short}-${eks_name}-${eng_name}-${eks_region_k}"
+  name       = substr("$${local.env_short}-${eks_name}-${eng_name}-${eks_region_k}", 0, 40)
   delimiter  = "-"
   tags = {
     "Environment" = "$${local.environment}",
@@ -197,7 +197,7 @@ module "eks_node_group_sg_${eks_region_k}_${eks_name}_${eng_name}" {
   source = "cloudposse/security-group/aws"
   version = "2.0.1"
   context = module.node_group_label_${eks_region_k}_${eks_name}_${eng_name}.context
-  name = "$${local.env_short}-${eks_name}-${eng_name}-${eks_region_k}"
+  name = substr("$${local.env_short}-${eks_name}-${eng_name}-${eks_region_k}", 0, 40)
 
   vpc_id     = jsondecode(var.vpcs_json).vpc_${eks_region_k}_${eks_values.network.vpc}.vpc_info.vpc_id
 
@@ -234,7 +234,7 @@ module "eks_node_group_${eks_region_k}_${eks_name}_${eng_name}" {
   version = "${ chomp(try(local.config.eks.node-group-module-version, "3.1.1")) }"
   %{ endif ~}
   context = module.node_group_label_${eks_region_k}_${eks_name}_${eng_name}.context
-  name = "$${local.env_short}-${eks_name}-${eng_name}-${eks_region_k}"
+  name = substr("$${local.env_short}-${eks_name}-${eng_name}-${eks_region_k}", 0, 40)
 
   instance_types = [%{ for type in eng_values.instance-types ~} "${type}", %{ endfor ~}]
   ami_type       = "${ chomp(try("${eng_values.ami-type}", "AL2_x86_64")) }"
