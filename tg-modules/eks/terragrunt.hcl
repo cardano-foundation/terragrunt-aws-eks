@@ -230,10 +230,6 @@ module "node_group_label_${eks_region_k}_${eks_name}_${eng_name}" {
   namespace  = ""
   name       = "$${local.env_short}-${eks_name}-${eng_name}-${eks_region_k}"
   delimiter  = "-"
-  tags = {
-    "Environment" = "$${local.environment}",
-    "Project" = "$${local.project}"
-  }
 }
 
       %{ if try(eng_values.exposed-ports, "") != "" } 
@@ -258,6 +254,14 @@ module "eks_node_group_sg_${eks_region_k}_${eks_name}_${eng_name}" {
   allow_all_egress = true
 
   rules = [
+    # add rule for 2049 from vpc cidr to allow nfs traffic for efs volumes if enabled for this node group
+    #    {
+    #      type      = "ingress"
+    #      from_port = 2049
+    #      to_port   = 2049
+    #      protocol  = "tcp"
+    #      cidr_blocks = [ jsondecode(var.vpcs_json).vpc_${eks_region_k}_${eks_values.network.vpc}.vpc_info.vpc_cidr_block ]
+    #    },
     %{ for sg_rule, sg_rule_values in eng_values.exposed-ports ~}
     {
       type      = "ingress"
@@ -366,6 +370,26 @@ module "eks_node_group_${eks_region_k}_${eks_name}_${eng_name}" {
   }
 
 }
+
+# add a bootstrap ssm script execution to setup any extra dependency as efs-utils
+resource "aws_ssm_association" "bootstrap_${eks_region_k}_${eks_name}_${eng_name}" {
+  name = "AWS-RunShellScript"
+  targets {
+    key    = "tag:eks:nodegroup-name"
+    values = [split(":", module.eks_node_group_${eks_region_k}_${eks_name}_${eng_name}.eks_node_group_id)[1]]
+  }
+  parameters = {
+    commands = <<-EOC
+      #!/bin/bash
+      set -x
+      yum install -y vim
+EOC
+  }
+  # optional: only run once
+  max_concurrency = "100%"
+  max_errors      = "0"
+}
+
       %{ if try(eng_values.max-pods, "") != "" }
 # NOTE: this requires arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore to be attached to the node group role
 # Create an aws_ssm_association that executes a script that will set --max-pods for kubelet
@@ -380,6 +404,7 @@ resource "aws_ssm_association" "set_max_pods_${eks_region_k}_${eks_name}_${eng_n
   parameters = {
     commands = <<-EOC
       #!/bin/bash
+      set -x
       MAX_PODS=${eng_values.max-pods}
       KUBELET_ENV_FILE=/etc/eks/kubelet/environment
       grep -q "^NODEADM_KUBELET_ARGS=.*max-pods=$MAX_PODS" $KUBELET_ENV_FILE && exit 0
@@ -405,6 +430,7 @@ resource "aws_ssm_association" "disable_swap_${eks_region_k}_${eks_name}_${eng_n
   parameters = {
     commands = <<-EOC
       #!/bin/bash
+      set -x
       SWAP_FILE=/swapfile
       KUBELET_CONFIG_FILE="/etc/kubernetes/kubelet/config.json.d/99-swap.conf"
       swapoff $SWAP_FILE
@@ -435,6 +461,7 @@ resource "aws_ssm_association" "enable_swap_${eks_region_k}_${eks_name}_${eng_na
   parameters = {
     commands = <<-EOC
       #!/bin/bash
+      set -x
       KUBELET_CONFIG_FILE="/etc/kubernetes/kubelet/config.json.d/99-swap.conf"
       SWAP_SIZE_GB=${eng_values.swap.size}
       SWAP_FILE=/swapfile
@@ -667,6 +694,42 @@ resource "aws_iam_role" "hybrid_node_role_${eks_region_k}_${eks_name}_${hng_name
   tags = module.hybrid_node_group_label_${eks_region_k}_${eks_name}_${hng_name}.tags
 }
 
+module "eks_hybrid_node_role_${eks_region_k}_${eks_name}_${hng_name}" {
+  
+  providers = {
+    aws = aws.${eks_region_k}
+  }
+
+  source = "terraform-aws-modules/eks/aws//modules/hybrid-node-role"
+  version = "${ chomp(try(local.config.eks.hybrid-node-role-module-version, "21.19.0")) }"
+
+  name = "$${local.env_short}-hnr-${eks_region_k}-${eks_name}-${hng_name}"
+
+  # intermediate_role_policies should be formatted differntly as it's raising this error
+  #  │ The given value is not suitable for
+  # │ module.eks_hybrid_node_role_eu-west-1_cf-idw_virginia.var.intermediate_role_policies
+  # │ declared at
+  # │ .terraform/modules/eks_hybrid_node_role_eu-west-1_cf-idw_virginia/modules/hybrid-node-role/variables.tf:235,1-38:
+  # │ map of string required.
+  #
+  policies = {
+    AmazonEKSWorkerNodePolicy = "arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy"
+    AmazonEKS_CNI_Policy = "arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy"
+    AmazonEC2ContainerRegistryReadOnly = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly"
+    AmazonSSMManagedInstanceCore = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+    AmazonEBSCSIDriverPolicy = "arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy"
+    AmazonEFSCSIDriverPolicy = "arn:aws:iam::aws:policy/service-role/AmazonEFSCSIDriverPolicy"
+    AmazonSSMManagedInstanceCore_extra = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+    ALBIngressControllerIAMPolicy = aws_iam_policy.aws_alb_policy.arn
+      %{~ if try(hng_values.extra-iam-policies, "") != "" }
+        %{~ for iam_k, iam_v in hng_values.extra-iam-policies ~}
+     ${iam_k} = "${iam_v}"
+        %{~ endfor }
+      %{~ endif }
+  }
+
+}
+
 # Attach required policies for EKS nodes
 resource "aws_iam_role_policy_attachment" "hybrid_node_AmazonEKSWorkerNodePolicy_${eks_region_k}_${eks_name}_${hng_name}" {
   provider = aws.${hng_values.network.region}
@@ -721,17 +784,7 @@ resource "aws_iam_role_policy_attachment" "hybrid_node_extra_policy_${eks_region
         %{ endfor ~}
       %{ endif ~}
 
-module "eks_hybrid_node_role_${eks_region_k}_${eks_name}_${hng_name}" {
-  
-  providers = {
-    aws = aws.${eks_region_k}
-  }
 
-  source = "terraform-aws-modules/eks/aws//modules/hybrid-node-role"
-  version = "${ chomp(try(local.config.eks.hybrid-node-role-module-version, "20.35.0")) }"
-
-  name = "hnr-${eks_region_k}-${eks_name}-${hng_name}"
-}
 
 # this will always change so any new node gets a valid activation code
 resource "aws_ssm_activation" "eks_hybrid_node_activation_${eks_region_k}_${eks_name}_${hng_name}" {
@@ -742,6 +795,12 @@ resource "aws_ssm_activation" "eks_hybrid_node_activation_${eks_region_k}_${eks_
   registration_limit = 100
   # expirationDate must be greater than now and lesser than 30 days.
   expiration_date    = timeadd(timestamp(), "2h")
+
+  tags = { 
+    "autoscaling:groupName" = module.hybrid_node_asg_${eks_region_k}_${eks_name}_${hng_name}.autoscaling_group_name,
+    "eks:cluster-name" = module.eks_cluster_${eks_region_k}_${eks_name}.eks_cluster_id,
+    "eks:nodegroup-name" = "${hng_name}"
+  }
 
 }
 
@@ -754,7 +813,9 @@ resource "aws_eks_access_entry" "${eks_region_k}_${eks_name}_${hng_name}_access_
 }
 
 resource "aws_iam_role_policy_attachment" "${eks_region_k}_${eks_name}_${hng_name}_hybrid_node_AmazonEKSWorkerNodePolicy" {
+  provider = aws.${hng_values.network.region}
   role       = aws_iam_role.hybrid_node_role_${eks_region_k}_${eks_name}_${hng_name}.name
+  #role       = module.eks_hybrid_node_role_${eks_region_k}_${eks_name}_${hng_name}.name
   policy_arn = "arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy"
 }
 
@@ -779,7 +840,9 @@ resource "aws_iam_policy" "${eks_region_k}_${eks_name}_${hng_name}_eks_list_acce
 }
 
 resource "aws_iam_role_policy_attachment" "${eks_region_k}_${eks_name}_${hng_name}_attach_eks_list_access_entries_policy" {
-  role       = module.eks_hybrid_node_role_${eks_region_k}_${eks_name}_${hng_name}.name
+  provider = aws.${hng_values.network.region}
+  #role       = module.eks_hybrid_node_role_${eks_region_k}_${eks_name}_${hng_name}.name
+  role       = aws_iam_role.hybrid_node_role_${eks_region_k}_${eks_name}_${hng_name}.name
   policy_arn = aws_iam_policy.${eks_region_k}_${eks_name}_${hng_name}_eks_list_access_entries_policy.arn
 }
 
@@ -789,6 +852,7 @@ resource "aws_iam_instance_profile" "hybrid_node_profile_${eks_region_k}_${eks_n
   
   name = "$${local.env_short}-${eks_name}-hybrid-${hng_name}-${hng_values.network.region}"
   role = aws_iam_role.hybrid_node_role_${eks_region_k}_${eks_name}_${hng_name}.name
+  #role = module.eks_hybrid_node_role_${eks_region_k}_${eks_name}_${hng_name}.name
 
   tags = module.hybrid_node_group_label_${eks_region_k}_${eks_name}_${hng_name}.tags
 }
@@ -1149,6 +1213,7 @@ resource "aws_ssm_association" "hybrid_node_enable_swap_${eks_region_k}_${eks_na
   parameters = {
     commands = <<-EOC
       #!/bin/bash
+      set -x
       KUBELET_CONFIG_FILE="/etc/kubernetes/kubelet/config.json.d/99-swap.conf"
       SWAP_SIZE_GB=${hng_values.swap.size}
       SWAP_FILE=/swapfile
@@ -1280,6 +1345,7 @@ output eks_hybrid_node_groups {
           asg_id = module.hybrid_node_asg_${eks_region_k}_${eks_name}_${hng_name}.autoscaling_group_id
           iam_role_arn = aws_iam_role.hybrid_node_role_${eks_region_k}_${eks_name}_${hng_name}.arn
           iam_role_name = aws_iam_role.hybrid_node_role_${eks_region_k}_${eks_name}_${hng_name}.name
+          assumed_iam_role_name = module.eks_hybrid_node_role_${eks_region_k}_${eks_name}_${hng_name}.name
           security_group_id = aws_security_group.hybrid_node_sg_${eks_region_k}_${eks_name}_${hng_name}.id
         }
       },
