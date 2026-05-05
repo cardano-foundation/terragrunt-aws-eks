@@ -565,6 +565,7 @@ ipam:
   mode: eni
   operator:
     clusterPoolIPv4PodCIDRList: [$${module.eks_cluster_eu-west-1_cf-idw.eks_cluster_ipv4_service_cidr}]
+  ciliumNodeUpdateRate: 5s
   nodeSpec:
     ipamMinAllocate: 64
     ipamPreAllocate: 64
@@ -794,7 +795,7 @@ resource "aws_ssm_activation" "eks_hybrid_node_activation_${eks_region_k}_${eks_
   iam_role           = module.eks_hybrid_node_role_${eks_region_k}_${eks_name}_${hng_name}.name
   registration_limit = 100
   # expirationDate must be greater than now and lesser than 30 days.
-  expiration_date    = timeadd(timestamp(), "2h")
+  expiration_date    = timeadd(timestamp(), "29d")
 
   tags = { 
     "autoscaling:groupName" = module.hybrid_node_asg_${eks_region_k}_${eks_name}_${hng_name}.autoscaling_group_name,
@@ -1044,6 +1045,7 @@ ipam:
   mode: eni
   operator:
     clusterPoolIPv4PodCIDRList: [$${module.eks_cluster_eu-west-1_cf-idw.eks_cluster_ipv4_service_cidr}]
+  ciliumNodeUpdateRate: 5s
   nodeSpec:
     ipamMinAllocate: 64
     ipamPreAllocate: 64
