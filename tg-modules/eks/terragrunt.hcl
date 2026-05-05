@@ -555,7 +555,7 @@ mtu: 8951
 eni:
   enabled: true
   updateEC2AdapterLimitViaAPI: true
-  awsReleaseExcessIPs: true
+  awsReleaseExcessIPs: false
   awsEnablePrefixDelegation: true
 nodeinit:
   enabled: true
@@ -566,8 +566,8 @@ ipam:
   operator:
     clusterPoolIPv4PodCIDRList: [$${module.eks_cluster_eu-west-1_cf-idw.eks_cluster_ipv4_service_cidr}]
   nodeSpec:
-    ipamMinAllocate: 48
-    ipamPreAllocate: 48
+    ipamMinAllocate: 64
+    ipamPreAllocate: 64
 k8s:
  requireIPv4PodCIDR: false
 routingMode: native
@@ -583,7 +583,7 @@ operator:
   image:
     repository: cilium/operator
     # replace suffix -[0-9] from the cni version as docker images dont have them
-    tag: "$${replace("v${ chomp(try("${eks_values.network.hybrid-nodes.cni.version}", "1.18.5-0")) }", "/-[0-9]+$/", "")}"
+    tag: "$${replace("v${ chomp(try("${eks_values.network.cni.version}", "1.19.3")) }", "/-[0-9]+$/", "")}"
   unmanagedPodWatcher:
     restart: false
   nodeSelector:
@@ -604,9 +604,9 @@ resource "helm_release" "${eks_region_k}_${eks_name}_cilium" {
   repository = "${ chomp (try("${eks_values.network.hybrid-nodes.cni.repository}", "oci://public.ecr.aws/eks/cilium")) }"
   namespace  = "cilium"
   create_namespace = true
-  chart      = "${ chomp (try("${eks_values.network.hybrid-nodes.cni.chart}", "cilium")) }"
-  name       = "${ chomp (try("${eks_values.network.hybrid-nodes.cni.release-name}", "cilium")) }"
-  version    = "${ chomp (try("${eks_values.network.hybrid-nodes.cni.version}", "1.18.5-0")) }"
+  chart      = "${ chomp (try("${eks_values.network.cni.chart}", "cilium")) }"
+  name       = "${ chomp (try("${eks_values.network.cni.release-name}", "cilium")) }"
+  version    = "${ chomp (try("${eks_values.network.cni.version}", "1.19.3")) }"
   wait             = false
 
   values = [trimspace(data.template_file.${eks_region_k}_${eks_name}_cilium.rendered)]
@@ -807,7 +807,7 @@ resource "aws_ssm_activation" "eks_hybrid_node_activation_${eks_region_k}_${eks_
 resource "aws_eks_access_entry" "${eks_region_k}_${eks_name}_${hng_name}_access_entry" {
   provider = aws.${eks_region_k}
 
-  cluster_name      = "stg-cf-idw-eu-west-1-cluster"
+  cluster_name      = module.eks_cluster_${eks_region_k}_${eks_name}.eks_cluster_id
   principal_arn     = module.eks_hybrid_node_role_${eks_region_k}_${eks_name}_${hng_name}.arn
   type              = "HYBRID_LINUX"
 }
@@ -1034,7 +1034,7 @@ extraArgs:
 eni:
   enabled: true
   updateEC2AdapterLimitViaAPI: true
-  awsReleaseExcessIPs: true
+  awsReleaseExcessIPs: false
   awsEnablePrefixDelegation: true
 nodeinit:
   enabled: true
@@ -1045,8 +1045,8 @@ ipam:
   operator:
     clusterPoolIPv4PodCIDRList: [$${module.eks_cluster_eu-west-1_cf-idw.eks_cluster_ipv4_service_cidr}]
   nodeSpec:
-    ipamMinAllocate: 48
-    ipamPreAllocate: 48
+    ipamMinAllocate: 64
+    ipamPreAllocate: 64
 k8s:
  requireIPv4PodCIDR: false
 routingMode: native
@@ -1063,7 +1063,7 @@ operator:
   image:
     repository: cilium/operator
     # replace suffix -[0-9] from the cni version as docker images dont have them
-    tag: "$${replace("v${ chomp(try("${eks_values.network.hybrid-nodes.cni.version}", "1.18.5-0")) }", "/-[0-9]+$/", "")}"
+    tag: "$${replace("v${ chomp(try("${eks_values.network.hybrid-nodes.cni.version}", "1.19.3")) }", "/-[0-9]+$/", "")}"
   nodeSelector:
     eks.amazonaws.com/nodegroup-name: ${hng_name}
   unmanagedPodWatcher:
@@ -1087,7 +1087,7 @@ resource "helm_release" "${eks_region_k}_${eks_name}_${hng_name}_cilium_hybrid" 
   create_namespace = true
   chart      = "${ chomp (try("${eks_values.network.hybrid-nodes.cni.chart}", "cilium")) }"
   name       = "${ chomp (try("${eks_values.network.hybrid-nodes.cni.release-name}", "cilium")) }-hybrid-${hng_name}"
-  version    = "${ chomp (try("${eks_values.network.hybrid-nodes.cni.version}", "1.18.5-0")) }"
+  version    = "${ chomp (try("${eks_values.network.hybrid-nodes.cni.version}", "1.19.3")) }"
   wait             = false
 
   values = [trimspace(data.template_file.${eks_region_k}_${eks_name}_${hng_name}_cilium_hybrid.rendered)]
