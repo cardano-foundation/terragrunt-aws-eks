@@ -114,6 +114,21 @@ data:
         echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1"
     }
 
+    parse_timestamp_to_epoch() {
+        local timestamp=$1
+
+        if [[ -z "$timestamp" || "$timestamp" == "null" ]]; then
+            return 1
+        fi
+
+        local epoch
+        if ! epoch=$(date -d "$timestamp" +%s 2>/dev/null); then
+            return 1
+        fi
+
+        echo "$epoch"
+    }
+
     # Parse pod states configuration into associative arrays
     declare -A POD_STATES
     declare -A STATE_TIMEOUTS
@@ -172,26 +187,62 @@ data:
 
         case "$current_state" in
             "Terminating")
-                echo "$pod_json" | jq -r '.metadata.deletionTimestamp'
+                echo "$pod_json" | jq -r '.metadata.deletionTimestamp // empty'
                 ;;
-            "ContainerCreating"|"PodInitializing")
-                # Use the pod creation time as approximation
-                echo "$pod_json" | jq -r '.metadata.creationTimestamp'
+            "ContainerCreating"|"PodInitializing"|"Init")
+                # Waiting states usually do not expose a reliable startedAt timestamp.
+                # Use status.startTime first, then fall back to creationTimestamp.
+                local state_time
+                state_time=$(echo "$pod_json" | jq -r '.status.startTime // .metadata.creationTimestamp // empty')
+                echo "$state_time"
                 ;;
             *)
-                # For container states, try to get the state start time
-                local state_time=$(echo "$pod_json" | jq -r --arg state "$current_state" '
-                    (.status.containerStatuses[]?.state.waiting // .status.initContainerStatuses[]?.state.waiting) |
-                    select(.reason == $state) | .startedAt // empty
+                # Match waiting reason across regular and init containers.
+                # waiting states generally lack startedAt, so use pod startTime / creationTimestamp.
+                local waiting_reason
+                waiting_reason=$(echo "$pod_json" | jq -r --arg state "$current_state" '
+                    [
+                      .status.containerStatuses[]?.state.waiting.reason,
+                      .status.initContainerStatuses[]?.state.waiting.reason
+                    ]
+                    | map(select(. != null and . != ""))
+                    | map(select(. == $state))
+                    | first // empty
                 ')
-                if [[ -n "$state_time" && "$state_time" != "null" ]]; then
-                    echo "$state_time"
-                else
-                    # Fallback to creation time
-                    echo "$pod_json" | jq -r '.metadata.creationTimestamp'
+
+                if [[ -n "$waiting_reason" ]]; then
+                    echo "$pod_json" | jq -r '.status.startTime // .metadata.creationTimestamp // empty'
+                    return
                 fi
+
+                # Fallback for non-waiting states.
+                echo "$pod_json" | jq -r '.status.startTime // .metadata.creationTimestamp // empty'
                 ;;
         esac
+    }
+
+    get_time_in_state_minutes() {
+        local pod_json=$1
+        local current_state=$2
+
+        local transition_time
+        transition_time=$(get_state_transition_time "$pod_json" "$current_state")
+
+        if [[ -z "$transition_time" || "$transition_time" == "null" ]]; then
+            log "Could not determine transition time for pod state $current_state"
+            return 1
+        fi
+
+        local transition_epoch
+        if ! transition_epoch=$(parse_timestamp_to_epoch "$transition_time"); then
+            log "Could not parse transition time '$transition_time' for pod state $current_state"
+            return 1
+        fi
+
+        local current_epoch
+        current_epoch=$(date +%s)
+
+        echo $(( (current_epoch - transition_epoch) / 60 ))
     }
 
     # Function to check if pod has been in state longer than threshold
@@ -200,22 +251,16 @@ data:
         local current_state=$2
         local threshold_minutes=${STATE_TIMEOUTS[$current_state]}
 
-        local transition_time=$(get_state_transition_time "$pod_json" "$current_state")
-
-        if [[ -z "$transition_time" || "$transition_time" == "null" ]]; then
-            log "Could not determine transition time for pod state $current_state"
+        local diff_minutes
+        if ! diff_minutes=$(get_time_in_state_minutes "$pod_json" "$current_state"); then
             return 1
         fi
 
-        # Calculate time difference
-        local transition_epoch=$(date -d "$transition_time" +%s 2>/dev/null || echo "0")
-        local current_epoch=$(date +%s)
-        local diff_minutes=$(( (current_epoch - transition_epoch) / 60 ))
-
         if [[ $diff_minutes -gt $threshold_minutes ]]; then
-            return 0  # Pod is stale
+            return 0
         fi
-        return 1  # Pod is not stale
+
+        return 1
     }
 
     # Function to check if pod is owned by a controller
@@ -372,10 +417,11 @@ data:
                 fi
 
                 # Calculate time in current state for logging
-                local transition_time=$(get_state_transition_time "$pod_json" "$current_state")
-                local transition_epoch=$(date -d "$transition_time" +%s 2>/dev/null || echo "0")
-                local current_epoch=$(date +%s)
-                local time_in_state=$(( (current_epoch - transition_epoch) / 60 ))
+                local time_in_state
+                if ! time_in_state=$(get_time_in_state_minutes "$pod_json" "$current_state"); then
+                    log "Skipping pod $pod_namespace/$pod_name: unable to calculate time in state $current_state"
+                    continue
+                fi
 
                 # Check controller ownership
                 local controller_info="none"
