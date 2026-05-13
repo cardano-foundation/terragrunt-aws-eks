@@ -11,7 +11,7 @@ data:
   # Pod states to monitor and their timeout in minutes
   # Format: "state1:timeout1,state2:timeout2,..."
   #pod_states_config: "Terminating:10,ContainerCreating:15,ImagePullBackOff:20,ErrImagePull:10,CrashLoopBackOff:30,CreateContainerConfigError:5,InvalidImageName:5,CreateContainerError:10"
-  pod_states_config: "Terminating:35,ContainerCreating:60,Init:300"
+  pod_states_config: "Terminating:1,ContainerCreating:3,Init:5"
 
   # Namespace selector (empty means all namespaces, comma-separated list for specific namespaces)
   namespace_selector: ""
@@ -35,9 +35,6 @@ data:
   # Maximum number of pods to delete in a single run (0 for no limit)
   max_pods_per_run: "0"
 
-  # Whether to create detailed events for each action
-  create_events: "true"
-
   # Delay between cleanup iterations in seconds
   loop_interval_seconds: "120"
 ---
@@ -59,9 +56,6 @@ rules:
 - apiGroups: [""]
   resources: ["pods/status"]
   verbs: ["get"]
-- apiGroups: [""]
-  resources: ["events"]
-  verbs: ["create", "list"]
 - apiGroups: [""]
   resources: ["namespaces"]
   verbs: ["get", "list"]
@@ -103,7 +97,6 @@ data:
     CHECK_CONTROLLER_OWNERSHIP=${CHECK_CONTROLLER_OWNERSHIP:-true}
     DELETE_CONTROLLER_OWNED_PODS=${DELETE_CONTROLLER_OWNED_PODS:-false}
     MAX_PODS_PER_RUN=${MAX_PODS_PER_RUN:-50}
-    CREATE_EVENTS=${CREATE_EVENTS:-true}
 
     echo "Starting pod cleanup job at $(date)"
     echo "Configuration:"
@@ -242,26 +235,6 @@ data:
         echo "$pod_json" | jq -r '.metadata.ownerReferences[]? | "\(.kind)/\(.name)"' | head -1
     }
 
-    # Function to create an event
-    create_event() {
-        local pod_name=$1
-        local pod_namespace=$2
-        local action=$3
-        local reason=$4
-        local message=$5
-
-        if [[ "$CREATE_EVENTS" != "true" || "$DRY_RUN" == "true" ]]; then
-            return 0
-        fi
-
-        kubectl create event "pod-cleanup-$(date +%s)" \
-            --namespace="$pod_namespace" \
-            --for="pod/$pod_name" \
-            --reason="$reason" \
-            --type="Normal" \
-            --message="$message" || true
-    }
-
     # Function to delete a pod
     delete_pod() {
         local pod_name=$1
@@ -284,13 +257,9 @@ data:
 
         if $delete_cmd; then
             log "Successfully deleted pod: $pod_namespace/$pod_name"
-            create_event "$pod_name" "$pod_namespace" "deletion" "PodCleanupSuccess" \
-                "Pod cleanup job deleted stuck pod in $pod_state state for ${time_in_state} minutes"
             return 0
         else
             log "Failed to delete pod: $pod_namespace/$pod_name"
-            create_event "$pod_name" "$pod_namespace" "deletion_failed" "PodCleanupFailed" \
-                "Pod cleanup job failed to delete stuck pod in $pod_state state"
             return 1
         fi
     }
@@ -509,11 +478,6 @@ spec:
             configMapKeyRef:
               name: pod-cleanup-config
               key: max_pods_per_run
-        - name: CREATE_EVENTS
-          valueFrom:
-            configMapKeyRef:
-              name: pod-cleanup-config
-              key: create_events
         - name: LOOP_INTERVAL_SECONDS
           valueFrom:
             configMapKeyRef:

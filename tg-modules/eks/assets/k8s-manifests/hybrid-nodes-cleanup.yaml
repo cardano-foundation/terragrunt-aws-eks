@@ -37,9 +37,6 @@ rules:
 - apiGroups: [""]
   resources: ["pods/eviction"]
   verbs: ["create"]
-- apiGroups: [""]
-  resources: ["events"]
-  verbs: ["create"]
 - apiGroups: ["apps"]
   resources: ["daemonsets"]
   verbs: ["get", "list"]
@@ -162,23 +159,6 @@ data:
         return 0
     }
 
-    # Function to create an event for the cleanup action
-    create_event() {
-        local node_name=$1
-        local action=$2
-        local reason=$3
-        
-        if [[ "$DRY_RUN" == "true" ]]; then
-            return 0
-        fi
-        
-        kubectl create event \
-            --reason="$reason" \
-            --message="Node cleanup job performed $action on node $node_name" \
-            --reporting-controller=node-cleanup-cronjob \
-            --reporting-instance=node-cleanup-job-$(date +%s) || true
-    }
-
     # Main cleanup logic
     main() {
         local nodes_cleaned=0
@@ -214,10 +194,8 @@ data:
                 # Delete the node
                 if delete_node "$node_name"; then
                     nodes_cleaned=$((nodes_cleaned + 1))
-                    create_event "$node_name" "deletion" "NodeCleanupSuccess"
                 else
                     nodes_failed=$((nodes_failed + 1))
-                    create_event "$node_name" "deletion_failed" "NodeCleanupFailed"
                 fi
             else
                 log "Node $node_name is healthy or not stale enough"
