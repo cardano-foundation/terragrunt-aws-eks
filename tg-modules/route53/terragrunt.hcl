@@ -157,11 +157,11 @@ resource "aws_route53_health_check" "rr_global_eks_${eks_region_k}_${eks_name}_$
   fqdn                            = try(jsondecode(var.eks_alb_json).eks_alb_${eks_region_k}_${eks_name}.alb_info.dns_name, "")
   port                            = 443
   type                            = "HTTPS"
-  resource_path                   = "/not-found"
+  resource_path                   = "/ping"
   failure_threshold               = 3
   request_interval                = 10
   measure_latency                 = false
-  invert_healthcheck              = true  # This makes 404 (unhealthy) appear as healthy, as we only want to know if traefik is responding at all, and it will respond to /not-found with a 404 if it's up
+  invert_healthcheck              = false
 
 }
 
@@ -192,11 +192,11 @@ resource "aws_route53_health_check" "rr_global_eks_${hng_values.network.region}_
   fqdn                            = try(jsondecode(var.eks_hybrid_alb_json).eks_hybrid_alb_${hng_values.network.region}_${eks_name}_${hng_name}.alb_info.dns_name, "")
   port                            = 443
   type                            = "HTTPS"
-  resource_path                   = "/not-found"
+  resource_path                   = "/ping"
   failure_threshold               = 3
   request_interval                = 10
   measure_latency                 = false
-  invert_healthcheck              = true  # This makes 404 (unhealthy) appear as healthy, as we only want to know if traefik is responding at all, and it will respond to /not-found with a 404 if it's up
+  invert_healthcheck              = false
 
 }
 

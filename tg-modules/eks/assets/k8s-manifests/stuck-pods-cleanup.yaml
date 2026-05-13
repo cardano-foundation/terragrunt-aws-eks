@@ -36,7 +36,7 @@ data:
   max_pods_per_run: "0"
 
   # Delay between cleanup iterations in seconds
-  loop_interval_seconds: "120"
+  loop_interval_seconds: "15"
 ---
 # pod-cleanup-rbac.yaml
 apiVersion: v1

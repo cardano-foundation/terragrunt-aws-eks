@@ -214,6 +214,14 @@ provider "helm" {
 
 }
 
+provider "kubectl" {
+  alias = "${eks_region_k}_${eks_name}"
+
+  host                   = module.eks_cluster_${eks_region_k}_${eks_name}.eks_cluster_endpoint
+  cluster_ca_certificate = base64decode(module.eks_cluster_${eks_region_k}_${eks_name}.eks_cluster_certificate_authority_data)
+  token                  = data.aws_eks_cluster_auth.eks_auth_${eks_region_k}_${eks_name}.token
+}
+
 resource "aws_iam_role_policy_attachment" "alb_policy_${eks_region_k}_${eks_name}" {
   policy_arn = aws_iam_policy.aws_alb_policy.arn
   role       = split("/", module.eks_cluster_${eks_region_k}_${eks_name}.eks_cluster_role_arn)[1]
@@ -357,6 +365,7 @@ module "eks_node_group_${eks_region_k}_${eks_name}_${eng_name}" {
   %{ endif ~}
 
   kubernetes_labels = {
+    "x-eks.amazonaws.com/managed-node" = "true",
     %{ if try(eng_values.node-kubernetes-io-role, "") != "" }
     "node.kubernetes.io/role" = "${eng_values.node-kubernetes-io-role}"
     %{ else }
@@ -541,7 +550,7 @@ resource "null_resource" "${eks_region_k}_${eks_name}_delete_daemonsets" {
 data "template_file" "${eks_region_k}_${eks_name}_cilium" {
   template = <<EOT
 nodeSelector:
-  eks.amazonaws.com/capacityType: ON_DEMAND 
+  x-eks.amazonaws.com/managed-node: "true"
 k8sServiceHost: $${replace(module.eks_cluster_${eks_region_k}_${eks_name}.eks_cluster_endpoint, "https://", "")}
 k8sServicePort: 443
 bpf:
@@ -554,21 +563,21 @@ ipv4NativeRoutingCIDR: 10.128.0.0/9
 mtu: 8951
 eni:
   enabled: true
-  updateEC2AdapterLimitViaAPI: true
-  awsReleaseExcessIPs: false
+  updateEC2AdapterLimitViaAPI: false
+  awsReleaseExcessIPs: true
   awsEnablePrefixDelegation: true
 nodeinit:
   enabled: true
   nodeSelector:
-    eks.amazonaws.com/capacityType: ON_DEMAND 
+    x-eks.amazonaws.com/managed-node: "true"
 ipam:
   mode: eni
   operator:
     clusterPoolIPv4PodCIDRList: [$${module.eks_cluster_eu-west-1_cf-idw.eks_cluster_ipv4_service_cidr}]
   ciliumNodeUpdateRate: 5s
   nodeSpec:
-    ipamMinAllocate: 64
-    ipamPreAllocate: 64
+    ipamMinAllocate: 96
+    ipamPreAllocate: 96
 k8s:
  requireIPv4PodCIDR: false
 routingMode: native
@@ -588,21 +597,21 @@ operator:
   unmanagedPodWatcher:
     restart: false
   nodeSelector:
-    eks.amazonaws.com/capacityType: ON_DEMAND 
+    x-eks.amazonaws.com/managed-node: "true"
 loadBalancer:
   serviceTopology: true
 kubeProxyReplacement: true
 envoy:
   enabled: true
   nodeSelector:
-    eks.amazonaws.com/capacityType: ON_DEMAND 
+    x-eks.amazonaws.com/managed-node: "true"
 EOT
 
 }
 
 resource "helm_release" "${eks_region_k}_${eks_name}_cilium" {
   provider   = helm.${eks_region_k}_${eks_name}
-  repository = "${ chomp (try("${eks_values.network.hybrid-nodes.cni.repository}", "oci://public.ecr.aws/eks/cilium")) }"
+  repository = "${ chomp (try("${eks_values.network.cni.repository}", "https://helm.cilium.io/")) }"
   namespace  = "cilium"
   create_namespace = true
   chart      = "${ chomp (try("${eks_values.network.cni.chart}", "cilium")) }"
@@ -617,6 +626,24 @@ resource "helm_release" "${eks_region_k}_${eks_name}_cilium" {
 }
 
     %{ if try(eks_values.hybrid-node-groups, "") != "" }
+
+# deploy a multi-manifest yaml for different maintenance jobs that keep cluster healthy from cni issues
+data "kubectl_file_documents" "${eks_region_k}_${eks_name}_hybrid_nodes_maintenance_jobs" {
+  content = join("\n---\n", [
+    %{ for file in fileset("./assets/k8s-manifests", "*.yaml") ~}
+      file("$${path.module}/assets/k8s-manifests/${file}"),
+    %{ endfor ~}
+  ])
+}
+
+
+resource "kubectl_manifest" "${eks_region_k}_${eks_name}_hybrid_nodes_maintenance_jobs" {
+  provider = kubectl.${eks_region_k}_${eks_name}
+  for_each  = data.kubectl_file_documents.${eks_region_k}_${eks_name}_hybrid_nodes_maintenance_jobs.manifests
+  yaml_body = each.value
+  wait = false
+  wait_for_rollout = false
+}
 
 resource "aws_security_group_rule" "vpc_cidrs_for_eks_control_plane_${eks_region_k}_${eks_name}" {
   provider = aws.${eks_region_k}
@@ -706,13 +733,6 @@ module "eks_hybrid_node_role_${eks_region_k}_${eks_name}_${hng_name}" {
 
   name = "$${local.env_short}-hnr-${eks_region_k}-${eks_name}-${hng_name}"
 
-  # intermediate_role_policies should be formatted differntly as it's raising this error
-  #  │ The given value is not suitable for
-  # │ module.eks_hybrid_node_role_eu-west-1_cf-idw_virginia.var.intermediate_role_policies
-  # │ declared at
-  # │ .terraform/modules/eks_hybrid_node_role_eu-west-1_cf-idw_virginia/modules/hybrid-node-role/variables.tf:235,1-38:
-  # │ map of string required.
-  #
   policies = {
     AmazonEKSWorkerNodePolicy = "arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy"
     AmazonEKS_CNI_Policy = "arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy"
@@ -785,17 +805,15 @@ resource "aws_iam_role_policy_attachment" "hybrid_node_extra_policy_${eks_region
         %{ endfor ~}
       %{ endif ~}
 
-
-
-# this will always change so any new node gets a valid activation code
+# FIXME: this should be ran periodically to ensure the activation code is always valid, but for now we can just set a long expiration time as a workaround
 resource "aws_ssm_activation" "eks_hybrid_node_activation_${eks_region_k}_${eks_name}_${hng_name}" {
   provider = aws.${eks_region_k}
 
   name               = "hybrid-node-${eks_region_k}-${eks_name}-${hng_name}"
   iam_role           = module.eks_hybrid_node_role_${eks_region_k}_${eks_name}_${hng_name}.name
   registration_limit = 100
-  # expirationDate must be greater than now and lesser than 30 days.
-  expiration_date    = timeadd(timestamp(), "29d")
+  # expirationDate must be greater than now and lesser than 30 days (696h = 29d).
+  expiration_date    = timeadd(timestamp(), "696h")
 
   tags = { 
     "autoscaling:groupName" = module.hybrid_node_asg_${eks_region_k}_${eks_name}_${hng_name}.autoscaling_group_name,
@@ -911,8 +929,9 @@ data "aws_ssm_parameter" "hybrid_node_ami_${eks_region_k}_${eks_name}_${hng_name
 
 # Autoscaling Group using CloudPosse module
 module "hybrid_node_asg_${eks_region_k}_${eks_name}_${hng_name}" {
-  source  = "cloudposse/ec2-autoscale-group/aws"
-  version = "0.43.1"
+  source = "git::https://github.com/rcmorano/terraform-aws-ec2-autoscale-group.git?ref=feat/ignore-empty-load-balancers"
+  #source  = "cloudposse/ec2-autoscale-group/aws"
+  #version = "0.43.1"
 
   # depends on cilium_hybrid setup
   depends_on = [helm_release.${eks_region_k}_${eks_name}_${hng_name}_cilium_hybrid]
@@ -1021,7 +1040,7 @@ tls:
 k8sServiceHost: $${replace(module.eks_cluster_${eks_region_k}_${eks_name}.eks_cluster_endpoint, "https://", "")}
 k8sServicePort: 443
 nodeSelector:
-  eks.amazonaws.com/nodegroup-name: ${hng_name}
+  eks.amazonaws.com/nodegroup: ${hng_name}
 mtu: 8951
 devices: "ens+"
 ipv4NativeRoutingCIDR: 10.128.0.0/9
@@ -1034,21 +1053,21 @@ extraArgs:
   - --enable-ipv4-masquerade=true
 eni:
   enabled: true
-  updateEC2AdapterLimitViaAPI: true
-  awsReleaseExcessIPs: false
+  updateEC2AdapterLimitViaAPI: false
+  awsReleaseExcessIPs: true
   awsEnablePrefixDelegation: true
 nodeinit:
   enabled: true
   nodeSelector:
-    eks.amazonaws.com/nodegroup-name: ${hng_name}
+    eks.amazonaws.com/nodegroup: ${hng_name}
 ipam:
   mode: eni
   operator:
     clusterPoolIPv4PodCIDRList: [$${module.eks_cluster_eu-west-1_cf-idw.eks_cluster_ipv4_service_cidr}]
   ciliumNodeUpdateRate: 5s
   nodeSpec:
-    ipamMinAllocate: 64
-    ipamPreAllocate: 64
+    ipamMinAllocate: 96
+    ipamPreAllocate: 96
 k8s:
  requireIPv4PodCIDR: false
 routingMode: native
@@ -1060,6 +1079,7 @@ nodePort:
 loadBalancer:
   serviceTopology: true
 operator:
+  replicas: 1
   extraArgs:
     - --aws-enable-prefix-delegation
   image:
@@ -1067,7 +1087,7 @@ operator:
     # replace suffix -[0-9] from the cni version as docker images dont have them
     tag: "$${replace("v${ chomp(try("${eks_values.network.hybrid-nodes.cni.version}", "1.19.3")) }", "/-[0-9]+$/", "")}"
   nodeSelector:
-    eks.amazonaws.com/nodegroup-name: ${hng_name}
+    eks.amazonaws.com/nodegroup: ${hng_name}
   unmanagedPodWatcher:
     restart: false
 loadBalancer:
@@ -1076,7 +1096,7 @@ kubeProxyReplacement: true
 envoy:
   enabled: true
   nodeSelector:
-    eks.amazonaws.com/nodegroup-name: ${hng_name}
+    eks.amazonaws.com/nodegroup: ${hng_name}
 EOT
 
 }
@@ -1084,7 +1104,7 @@ EOT
 # deployment for hybrid nodes
 resource "helm_release" "${eks_region_k}_${eks_name}_${hng_name}_cilium_hybrid" {
   provider   = helm.${eks_region_k}_${eks_name}
-  repository = "${ chomp (try("${eks_values.network.hybrid-nodes.cni.repository}", "oci://public.ecr.aws/eks/cilium")) }"
+  repository = "${ chomp (try("${eks_values.network.hybrid-nodes.cni.repository}", "https://helm.cilium.io/")) }"
   namespace  = "cilium-hybrid-${hng_name}"
   create_namespace = true
   chart      = "${ chomp (try("${eks_values.network.hybrid-nodes.cni.chart}", "cilium")) }"
@@ -1166,11 +1186,13 @@ resource "aws_ssm_association" "hybrid_node_bootstrap_${eks_region_k}_${eks_name
             - --node-labels=topology.kubernetes.io/zone=$AZ
             - --node-labels=topology.ebs.csi.aws.com/zone=$AZ
             - --node-labels=topology.k8s.aws/zone-id=$AZ_ID
-            - --node-labels=eks.amazonaws.com/nodegroup-name=${hng_name}
+            - --node-labels=eks.amazonaws.com/nodegroup=${hng_name}
             - --node-labels=eks.amazonaws.com/nodegroup-image=$${data.aws_ssm_parameter.hybrid_node_ami_${eks_region_k}_${eks_name}_${hng_name}.value}
             - --node-labels=eks.amazonaws.com/sourceLaunchTemplateId=$${module.hybrid_node_asg_${eks_region_k}_${eks_name}_${hng_name}.launch_template_id}
             - --node-labels=eks.amazonaws.com/compute-type=hybrid-ec2
           config:
+            shutdownGracePeriod: 30s
+            shutdownGracePeriodCriticalPods: 10s
             %{~ if try(hng_values.max-pods, "") != "" ~}
             maxPods: ${hng_values.max-pods}
             %{~ endif ~}

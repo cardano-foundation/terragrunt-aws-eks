@@ -6,7 +6,7 @@ metadata:
   namespace: kube-system
 data:
   # Time in minutes after which NotReady nodes should be cleaned up
-  cleanup_threshold_minutes: "5"
+  cleanup_threshold_minutes: "4"
   # Whether to perform dry run (true) or actual cleanup (false)
   dry_run: "false"
   # Node label selector to target specific nodes (optional)
@@ -16,7 +16,7 @@ data:
   # Whether to drain nodes before deletion
   drain_nodes: "true"
   # Interval in seconds between cleanup runs
-  cleanup_interval_seconds: "120"
+  cleanup_interval_seconds: "15"
 ---
 # node-cleanup-rbac.yaml
 apiVersion: v1
