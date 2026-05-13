@@ -33,32 +33,37 @@ roleRef:
   name: csr-approver-role
   apiGroup: rbac.authorization.k8s.io
 ---
-apiVersion: batch/v1
-kind: CronJob
+apiVersion: apps/v1
+kind: Deployment
 metadata:
   name: periodic-csr-approver
   namespace: kube-system
 spec:
-  schedule: "*/2 * * * *"
-  concurrencyPolicy: Forbid
-  jobTemplate:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: periodic-csr-approver
+  template:
+    metadata:
+      labels:
+        app: periodic-csr-approver
     spec:
-      template:
-        spec:
-          serviceAccountName: csr-approver-sa
-          containers:
-          - name: approver
-            image: bitnami/kubectl:latest
-            command:
-            - /bin/sh
-            - -c
-            - |
-              echo "Checking for pending CSRs matching 'system:node:mi'..."
-              CSRS=$(kubectl get csr | grep 'system:node:mi.*Pending' | awk '{print $1}')
-              if [ -z "$CSRS" ]; then
-                echo "No matching CSRs found."
-              else
-                echo "Approving: $CSRS"
-                echo $CSRS | xargs kubectl certificate approve
-              fi
-          restartPolicy: OnFailure
+      serviceAccountName: csr-approver-sa
+      containers:
+      - name: approver
+        image: bitnami/kubectl:latest
+        command:
+        - /bin/sh
+        - -c
+        - |
+          while true; do
+            echo "Checking for pending CSRs matching 'system:node:mi'..."
+            CSRS=$(kubectl get csr | grep 'system:node:mi.*Pending' | awk '{print $1}')
+            if [ -z "$CSRS" ]; then
+              echo "No matching CSRs found."
+            else
+              echo "Approving: $CSRS"
+              echo $CSRS | xargs kubectl certificate approve
+            fi
+            sleep 120
+          done
