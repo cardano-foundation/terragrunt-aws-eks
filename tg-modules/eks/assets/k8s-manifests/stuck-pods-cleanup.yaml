@@ -122,7 +122,7 @@ data:
         fi
 
         local epoch
-        if ! epoch=$(date -d "$timestamp" +%s 2>/dev/null); then
+        if ! epoch=$(jq -nr --arg ts "$timestamp" '$ts | fromdateiso8601' 2>/dev/null); then
             return 1
         fi
 
