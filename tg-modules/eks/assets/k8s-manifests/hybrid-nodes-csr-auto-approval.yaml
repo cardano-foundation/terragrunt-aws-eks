@@ -1,0 +1,64 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: csr-approver-sa
+  namespace: kube-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: csr-approver-role
+rules:
+- apiGroups: ["certificates.k8s.io"]
+  resources: ["certificatesigningrequests"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["certificates.k8s.io"]
+  resources: ["certificatesigningrequests/approval"]
+  verbs: ["update"]
+- apiGroups: ["certificates.k8s.io"]
+  resources: ["signers"]
+  resourceNames: ["kubernetes.io/kubelet-serving", "kubernetes.io/kube-apiserver-client-kubelet"]
+  verbs: ["approve"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: csr-approver-binding
+subjects:
+- kind: ServiceAccount
+  name: csr-approver-sa
+  namespace: kube-system
+roleRef:
+  kind: ClusterRole
+  name: csr-approver-role
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: periodic-csr-approver
+  namespace: kube-system
+spec:
+  schedule: "*/2 * * * *"
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          serviceAccountName: csr-approver-sa
+          containers:
+          - name: approver
+            image: bitnami/kubectl:latest
+            command:
+            - /bin/sh
+            - -c
+            - |
+              echo "Checking for pending CSRs matching 'system:node:mi'..."
+              CSRS=$(kubectl get csr | grep 'system:node:mi.*Pending' | awk '{print $1}')
+              if [ -z "$CSRS" ]; then
+                echo "No matching CSRs found."
+              else
+                echo "Approving: $CSRS"
+                echo $CSRS | xargs kubectl certificate approve
+              fi
+          restartPolicy: OnFailure
