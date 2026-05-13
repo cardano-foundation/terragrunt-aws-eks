@@ -74,6 +74,8 @@ data:
     POD_DELETION_GRACE_PERIOD=${POD_DELETION_GRACE_PERIOD:-30}
     DRAIN_NODES=${DRAIN_NODES:-true}
 
+    NOTREADY_SINCE_ANNOTATION="hybrid.eks.amazonaws.com/notready-since"
+
     echo "Starting node cleanup run at $(date)"
     echo "Configuration:"
     echo "  Cleanup threshold: ${CLEANUP_THRESHOLD_MINUTES} minutes"
@@ -85,31 +87,85 @@ data:
         echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1"
     }
 
+    annotate_notready_since() {
+        local node_name=$1
+        local timestamp=$2
+
+        if [[ "$DRY_RUN" == "true" ]]; then
+            log "[DRY RUN] Would annotate node $node_name with ${NOTREADY_SINCE_ANNOTATION}=$timestamp"
+            return 0
+        fi
+
+        kubectl annotate node "$node_name" "${NOTREADY_SINCE_ANNOTATION}=$timestamp" --overwrite >/dev/null
+    }
+
+    clear_notready_since() {
+        local node_name=$1
+
+        if [[ "$DRY_RUN" == "true" ]]; then
+            log "[DRY RUN] Would remove annotation ${NOTREADY_SINCE_ANNOTATION} from node $node_name"
+            return 0
+        fi
+
+        kubectl annotate node "$node_name" "${NOTREADY_SINCE_ANNOTATION}-" >/dev/null 2>&1 || true
+    }
+
     is_node_stale() {
         local node_name=$1
         local node_info
         node_info=$(kubectl get node "$node_name" -o json)
 
         local ready_condition
-        ready_condition=$(echo "$node_info" | jq -r '.status.conditions[] | select(.type=="Ready")')
+        ready_condition=$(echo "$node_info" | jq -c '.status.conditions[] | select(.type=="Ready")')
+
+        if [[ -z "$ready_condition" ]]; then
+            log "Node $node_name has no Ready condition; skipping"
+            return 1
+        fi
+
         local status
         status=$(echo "$ready_condition" | jq -r '.status')
-        local last_transition
-        last_transition=$(echo "$ready_condition" | jq -r '.lastTransitionTime')
 
-        if [[ "$status" != "True" ]]; then
-            local last_transition_epoch
-            last_transition_epoch=$(date -d "$last_transition" +%s)
-            local current_epoch
-            current_epoch=$(date +%s)
-            local diff_minutes=$(( (current_epoch - last_transition_epoch) / 60 ))
+        local annotation_ts
+        annotation_ts=$(echo "$node_info" | jq -r --arg ann "$NOTREADY_SINCE_ANNOTATION" '.metadata.annotations[$ann] // empty')
 
-            log "Node $node_name has been NotReady for $diff_minutes minutes"
+        local current_epoch
+        current_epoch=$(date -u +%s)
 
-            if [[ $diff_minutes -gt $CLEANUP_THRESHOLD_MINUTES ]]; then
-                return 0
+        if [[ "$status" == "True" ]]; then
+            if [[ -n "$annotation_ts" ]]; then
+                log "Node $node_name is Ready again; clearing ${NOTREADY_SINCE_ANNOTATION}"
+                clear_notready_since "$node_name"
             fi
+            return 1
         fi
+
+        if [[ -z "$annotation_ts" ]]; then
+            local now_iso
+            now_iso=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+            log "Node $node_name is NotReady/Unknown first observed at $now_iso"
+            annotate_notready_since "$node_name" "$now_iso"
+            return 1
+        fi
+
+        local notready_since_epoch
+        notready_since_epoch=$(date -u -d "$annotation_ts" +%s 2>/dev/null || echo "")
+
+        if [[ -z "$notready_since_epoch" ]]; then
+            log "Node $node_name has invalid ${NOTREADY_SINCE_ANNOTATION}=$annotation_ts; resetting"
+            local now_iso
+            now_iso=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+            annotate_notready_since "$node_name" "$now_iso"
+            return 1
+        fi
+
+        local diff_minutes=$(( (current_epoch - notready_since_epoch) / 60 ))
+        log "Node $node_name has been NotReady for $diff_minutes minutes (since $annotation_ts)"
+
+        if [[ $diff_minutes -ge $CLEANUP_THRESHOLD_MINUTES ]]; then
+            return 0
+        fi
+
         return 1
     }
 
