@@ -30,7 +30,7 @@ metadata:
 rules:
 - apiGroups: [""]
   resources: ["nodes"]
-  verbs: ["get", "list", "delete"]
+  verbs: ["get", "list", "patch", "delete"]
 - apiGroups: [""]
   resources: ["pods"]
   verbs: ["get", "list", "delete", "deletecollection"]
@@ -40,6 +40,9 @@ rules:
 - apiGroups: [""]
   resources: ["events"]
   verbs: ["create"]
+- apiGroups: ["apps"]
+  resources: ["daemonsets"]
+  verbs: ["get", "list"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -170,7 +173,6 @@ data:
         fi
         
         kubectl create event \
-            --type=Normal \
             --reason="$reason" \
             --message="Node cleanup job performed $action on node $node_name" \
             --reporting-controller=node-cleanup-cronjob \
@@ -242,6 +244,7 @@ metadata:
 spec:
   # Run every 2 minutes
   schedule: "*/2 * * * *"
+  concurrencyPolicy: Forbid
   jobTemplate:
     spec:
       template:

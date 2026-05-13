@@ -6,7 +6,7 @@ metadata:
   namespace: kube-system
 data:
   # Whether to perform dry run (true) or actual cleanup (false)
-  dry_run: "true"
+  dry_run: "false"
   
   # Pod states to monitor and their timeout in minutes
   # Format: "state1:timeout1,state2:timeout2,..."
@@ -14,10 +14,11 @@ data:
   pod_states_config: "Terminating:35,ContainerCreating:60,Init:300"
   
   # Namespace selector (empty means all namespaces, comma-separated list for specific namespaces)
-  #namespace_selector: ""
+  namespace_selector: ""
   
   # Namespace exclusions (comma-separated list of namespaces to exclude)
   # excluded_namespaces: "kube-system,kube-public,kube-node-lease"
+  excluded_namespaces: ""
   
   # Pod label selector to target specific pods (optional)
   pod_selector: ""
@@ -51,7 +52,7 @@ metadata:
 rules:
 - apiGroups: [""]
   resources: ["pods"]
-  verbs: ["get", "list", "delete", "deletecollection"]
+  verbs: ["get", "list", "watch", "delete", "deletecollection"]
 - apiGroups: [""]
   resources: ["pods/status"]
   verbs: ["get"]
@@ -72,6 +73,11 @@ metadata:
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
+  name: pod-cleanup-role
+subjects:
+- kind: ServiceAccount
+  name: pod-cleanup-sa
+  namespace: kube-system
 ---
 # pod-cleanup-script.yaml
 apiVersion: v1
@@ -88,7 +94,7 @@ data:
     DRY_RUN=${DRY_RUN:-true}
     POD_STATES_CONFIG=${POD_STATES_CONFIG:-"Terminating:10,ContainerCreating:15"}
     NAMESPACE_SELECTOR=${NAMESPACE_SELECTOR:-""}
-    EXCLUDED_NAMESPACES=${EXCLUDED_NAMESPACES:-"kube-system,kube-public,kube-node-lease"}
+    EXCLUDED_NAMESPACES=${EXCLUDED_NAMESPACES:-""}
     POD_SELECTOR=${POD_SELECTOR:-""}
     DELETION_GRACE_PERIOD=${DELETION_GRACE_PERIOD:-0}
     CHECK_CONTROLLER_OWNERSHIP=${CHECK_CONTROLLER_OWNERSHIP:-true}
@@ -240,18 +246,17 @@ data:
         local action=$3
         local reason=$4
         local message=$5
-        
+    
         if [[ "$CREATE_EVENTS" != "true" || "$DRY_RUN" == "true" ]]; then
             return 0
         fi
-        
-        kubectl create event \
-            --type=Normal \
-            --reason="$reason" \
-            --message="$message" \
+    
+        kubectl create event "pod-cleanup-$(date +%s)" \
             --namespace="$pod_namespace" \
-            --reporting-controller=pod-cleanup-cronjob \
-            --reporting-instance=pod-cleanup-job-$(date +%s) || true
+            --for="pod/$pod_name" \
+            --reason="$reason" \
+            --type="Normal" \
+            --message="$message" || true
     }
 
     # Function to delete a pod
@@ -269,11 +274,11 @@ data:
             return 0
         fi
         
-        local delete_cmd="kubectl delete pod $pod_name -n $pod_namespace"
+        local delete_cmd="kubectl delete pod --force $pod_name -n $pod_namespace"
         if [[ "$DELETION_GRACE_PERIOD" != "30" ]]; then
             delete_cmd="$delete_cmd --grace-period=$DELETION_GRACE_PERIOD"
         fi
-        
+
         if $delete_cmd; then
             log "Successfully deleted pod: $pod_namespace/$pod_name"
             create_event "$pod_name" "$pod_namespace" "deletion" "PodCleanupSuccess" \
@@ -443,6 +448,7 @@ metadata:
 spec:
   # Run every 2 minutes
   schedule: "*/2 * * * *"
+  concurrencyPolicy: Forbid
   jobTemplate:
     spec:
       template:
