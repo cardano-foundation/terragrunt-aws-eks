@@ -110,6 +110,21 @@ data:
         kubectl annotate node "$node_name" "${NOTREADY_SINCE_ANNOTATION}-" >/dev/null 2>&1 || true
     }
 
+    parse_timestamp_to_epoch() {
+        local timestamp=$1
+
+        if [[ -z "$timestamp" ]]; then
+            return 1
+        fi
+
+        if [[ "$timestamp" =~ ^[0-9]+$ ]]; then
+            echo "$timestamp"
+            return 0
+        fi
+
+        date -u -d "$timestamp" +%s 2>/dev/null
+    }
+
     is_node_stale() {
         local node_name=$1
         local node_info
@@ -141,23 +156,26 @@ data:
         fi
 
         if [[ -z "$annotation_ts" ]]; then
-            local now_epoch
-            now_epoch=$(date -u +%s)
-            log "Node $node_name is NotReady/Unknown first observed at epoch $now_epoch"
-            annotate_notready_since "$node_name" "$now_epoch"
+            local now_rfc3339
+            now_rfc3339=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+            log "Node $node_name is NotReady/Unknown first observed at $now_rfc3339"
+            annotate_notready_since "$node_name" "$now_rfc3339"
             return 1
         fi
 
-        if ! [[ "$annotation_ts" =~ ^[0-9]+$ ]]; then
-            log "Node $node_name has non-epoch ${NOTREADY_SINCE_ANNOTATION}=$annotation_ts; resetting"
-            local now_epoch
-            now_epoch=$(date -u +%s)
-            annotate_notready_since "$node_name" "$now_epoch"
+        local annotation_epoch
+        annotation_epoch=$(parse_timestamp_to_epoch "$annotation_ts" || true)
+
+        if [[ -z "$annotation_epoch" ]]; then
+            local now_rfc3339
+            now_rfc3339=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+            log "Node $node_name has invalid ${NOTREADY_SINCE_ANNOTATION}=$annotation_ts; resetting to $now_rfc3339"
+            annotate_notready_since "$node_name" "$now_rfc3339"
             return 1
         fi
 
-        local diff_minutes=$(( (current_epoch - annotation_ts) / 60 ))
-        log "Node $node_name has been NotReady for $diff_minutes minutes (since epoch $annotation_ts)"
+        local diff_minutes=$(( (current_epoch - annotation_epoch) / 60 ))
+        log "Node $node_name has been NotReady for $diff_minutes minutes (since $annotation_ts)"
 
         if [[ $diff_minutes -ge $CLEANUP_THRESHOLD_MINUTES ]]; then
             return 0
