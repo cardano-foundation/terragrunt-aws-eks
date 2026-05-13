@@ -111,7 +111,7 @@ data:
 
     # Function to log with timestamp
     log() {
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1"
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" >&2
     }
 
     parse_timestamp_to_epoch() {
@@ -253,8 +253,11 @@ data:
 
         local diff_minutes
         if ! diff_minutes=$(get_time_in_state_minutes "$pod_json" "$current_state"); then
+            log "Skipping stale check for state $current_state because time-in-state could not be calculated"
             return 1
         fi
+
+        log "State duration for $current_state is ${diff_minutes}m (threshold: ${threshold_minutes}m)"
 
         if [[ $diff_minutes -ge $threshold_minutes ]]; then
             return 0
