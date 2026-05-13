@@ -48,6 +48,15 @@ spec:
       labels:
         app: periodic-csr-approver
     spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: x-eks.amazonaws.com/managed-node
+                operator: In
+                values:
+                - "true"
       serviceAccountName: csr-approver-sa
       containers:
       - name: approver

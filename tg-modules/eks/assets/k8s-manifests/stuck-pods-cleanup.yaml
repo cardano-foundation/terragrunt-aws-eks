@@ -427,6 +427,15 @@ spec:
       labels:
         app: pod-cleanup
     spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: x-eks.amazonaws.com/managed-node
+                operator: In
+                values:
+                - "true"
       serviceAccountName: pod-cleanup-sa
       restartPolicy: Always
       containers:
