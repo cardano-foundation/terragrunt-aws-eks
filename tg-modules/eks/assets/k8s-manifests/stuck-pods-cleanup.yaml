@@ -256,7 +256,7 @@ data:
             return 1
         fi
 
-        if [[ $diff_minutes -gt $threshold_minutes ]]; then
+        if [[ $diff_minutes -ge $threshold_minutes ]]; then
             return 0
         fi
 
@@ -295,16 +295,19 @@ data:
             return 0
         fi
 
-        local delete_cmd="kubectl delete pod --force $pod_name -n $pod_namespace"
-        if [[ "$DELETION_GRACE_PERIOD" != "30" ]]; then
-            delete_cmd="$delete_cmd --grace-period=$DELETION_GRACE_PERIOD"
+        local -a delete_cmd=(kubectl delete pod "$pod_name" -n "$pod_namespace" --force)
+        if [[ -n "$DELETION_GRACE_PERIOD" ]]; then
+            delete_cmd+=("--grace-period=$DELETION_GRACE_PERIOD")
         fi
 
-        if $delete_cmd; then
+        local delete_output
+        if delete_output=$("${delete_cmd[@]}" 2>&1); then
             log "Successfully deleted pod: $pod_namespace/$pod_name"
+            log "$delete_output"
             return 0
         else
             log "Failed to delete pod: $pod_namespace/$pod_name"
+            log "$delete_output"
             return 1
         fi
     }
@@ -377,14 +380,14 @@ data:
             log "Processing namespace: $namespace"
 
             # Build kubectl command for getting pods
-            local kubectl_cmd="kubectl get pods -n $namespace -o json"
+            local -a kubectl_cmd=(kubectl get pods -n "$namespace" -o json)
             if [[ -n "$POD_SELECTOR" ]]; then
-                kubectl_cmd="$kubectl_cmd --selector=$POD_SELECTOR"
+                kubectl_cmd+=("--selector=$POD_SELECTOR")
             fi
 
             # Get pods in namespace
             local pods_json
-            if ! pods_json=$($kubectl_cmd 2>/dev/null); then
+            if ! pods_json=$("${kubectl_cmd[@]}" 2>/dev/null); then
                 log "Failed to get pods in namespace $namespace, skipping"
                 continue
             fi
@@ -393,7 +396,7 @@ data:
             log "Found $pod_count pods in namespace $namespace"
 
             # Process each pod
-            echo "$pods_json" | jq -c '.items[]' | while read -r pod_json; do
+            while read -r pod_json; do
                 # Check if we've hit the max pods limit
                 if [[ "$MAX_PODS_PER_RUN" -gt 0 && $pods_cleaned -ge "$MAX_PODS_PER_RUN" ]]; then
                     log "Reached maximum pods per run limit ($MAX_PODS_PER_RUN), stopping"
@@ -443,7 +446,7 @@ data:
                 else
                     pods_failed=$((pods_failed + 1))
                 fi
-            done
+            done < <(echo "$pods_json" | jq -c '.items[]')
         done
 
         log "Cleanup completed. Pods cleaned: $pods_cleaned, Pods failed: $pods_failed, Pods skipped: $pods_skipped"
