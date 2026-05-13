@@ -87,42 +87,6 @@ data:
         echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1"
     }
 
-    parse_rfc3339_to_epoch() {
-        local timestamp=$1
-
-        if [[ -z "$timestamp" ]]; then
-            return 1
-        fi
-
-        if python3 - "$timestamp" <<'PY' >/dev/null 2>&1
-import sys
-from datetime import datetime, timezone
-
-raw = sys.argv[1]
-if raw.endswith('Z'):
-    raw = raw[:-1] + '+00:00'
-
-dt = datetime.fromisoformat(raw)
-print(int(dt.timestamp()))
-PY
-        then
-            python3 - "$timestamp" <<'PY'
-import sys
-from datetime import datetime
-
-raw = sys.argv[1]
-if raw.endswith('Z'):
-    raw = raw[:-1] + '+00:00'
-
-dt = datetime.fromisoformat(raw)
-print(int(dt.timestamp()))
-PY
-            return 0
-        fi
-
-        date -u -d "$timestamp" +%s 2>/dev/null
-    }
-
     annotate_notready_since() {
         local node_name=$1
         local timestamp=$2
@@ -177,26 +141,23 @@ PY
         fi
 
         if [[ -z "$annotation_ts" ]]; then
-            local now_iso
-            now_iso=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-            log "Node $node_name is NotReady/Unknown first observed at $now_iso"
-            annotate_notready_since "$node_name" "$now_iso"
+            local now_epoch
+            now_epoch=$(date -u +%s)
+            log "Node $node_name is NotReady/Unknown first observed at epoch $now_epoch"
+            annotate_notready_since "$node_name" "$now_epoch"
             return 1
         fi
 
-        local notready_since_epoch
-        notready_since_epoch=$(parse_rfc3339_to_epoch "$annotation_ts" 2>/dev/null || echo "")
-
-        if [[ -z "$notready_since_epoch" ]]; then
-            log "Node $node_name has invalid ${NOTREADY_SINCE_ANNOTATION}=$annotation_ts; resetting"
-            local now_iso
-            now_iso=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-            annotate_notready_since "$node_name" "$now_iso"
+        if ! [[ "$annotation_ts" =~ ^[0-9]+$ ]]; then
+            log "Node $node_name has non-epoch ${NOTREADY_SINCE_ANNOTATION}=$annotation_ts; resetting"
+            local now_epoch
+            now_epoch=$(date -u +%s)
+            annotate_notready_since "$node_name" "$now_epoch"
             return 1
         fi
 
-        local diff_minutes=$(( (current_epoch - notready_since_epoch) / 60 ))
-        log "Node $node_name has been NotReady for $diff_minutes minutes (since $annotation_ts)"
+        local diff_minutes=$(( (current_epoch - annotation_ts) / 60 ))
+        log "Node $node_name has been NotReady for $diff_minutes minutes (since epoch $annotation_ts)"
 
         if [[ $diff_minutes -ge $CLEANUP_THRESHOLD_MINUTES ]]; then
             return 0
