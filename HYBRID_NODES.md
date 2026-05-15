@@ -1,55 +1,74 @@
 # EKS Hybrid Nodes Support
 
-This repository supports EC2 instances in different VPCs joining EKS clusters as worker nodes using the `nodeadm` CLI tool and standard EC2 instance profiles.
+This repository supports running EKS hybrid worker nodes on EC2 instances located in VPCs that are different from the EKS control plane VPC, including VPCs in other AWS regions.
+
+The current implementation is based on:
+- **AWS Systems Manager Hybrid Activations** for node registration bootstrap
+- **EKS hybrid node access entries** (`HYBRID_LINUX`) for cluster access
+- **EC2 Auto Scaling Groups** for compute lifecycle management
+- **VPC peering** for network connectivity between the EKS control plane VPC and hybrid node VPCs
+- **SSM associations** for post-bootstrap node configuration such as swap and kubelet tuning
+
+> **Important:** This implementation does **not** currently use the direct `nodeadm init` flow described in older versions of this document. The Terraform in `tg-modules/eks/terragrunt.hcl` provisions hybrid nodes using SSM activation, EKS hybrid access entries, IAM roles, and Auto Scaling Groups.
 
 ## Overview
 
-These "hybrid nodes" are EC2 instances managed by autoscaling groups that:
+These hybrid node groups are EC2 instances managed by autoscaling groups that:
 - Run in VPCs different from the EKS control plane VPC
-- Use VPC peering to communicate with the control plane
-- Join the EKS cluster directly using `apiServerEndpoint` and `certificateAuthority`
-- Use the `nodeadm` CLI tool for installation and initialization
-- Use standard EC2 IAM instance profiles for authentication (no SSM Hybrid Activation needed)
-- Are managed via AWS SSM for optional configuration (swap, kubelet settings, etc.)
-- Support all the same features as managed node groups
-
-**Note**: This implementation is optimized for EC2 instances in AWS. For true on-premises or edge hybrid nodes, AWS SSM Hybrid Activations would be required.
+- Can run in other AWS regions
+- Connect to the cluster over routed VPC-to-VPC connectivity
+- Register through AWS SSM Hybrid Activation
+- Are granted cluster access using `aws_eks_access_entry` with type `HYBRID_LINUX`
+- Use standard EC2 IAM instance profiles for AWS permissions on the instance
+- Can receive optional SSM-based post-bootstrap configuration such as swap configuration
+- Can be exposed to the cluster autoscaler through the expected ASG tags
 
 ## Architecture
 
-```
-┌─────────────────────────────┐         ┌─────────────────────────────┐
-│  Control Plane VPC          │         │  Hybrid Node VPC            │
-│  (172.1.0.0/16)             │◄────────┤  (172.2.0.0/16)             │
-│                             │ Peering │                             │
-│  ┌─────────────────────┐    │         │  ┌─────────────────────┐    │
-│  │ EKS Control Plane   │    │         │  │ Hybrid Node ASG     │    │
-│  │ - API Server        │    │         │  │ - EC2 Instances     │    │
-│  │ - etcd             │    │         │  │ - Instance Profile  │    │
-│  └─────────────────────┘    │         │  │ - nodeadm CLI       │    │
-│                             │         │  └─────────────────────┘    │
-│  ┌─────────────────────┐    │         │                             │
-│  │ Managed Node Groups │    │         │                             │
-│  └─────────────────────┘    │         │                             │
-└─────────────────────────────┘         └─────────────────────────────┘
+```text
+┌─────────────────────────────┐              ┌─────────────────────────────┐
+│  Control Plane VPC          │              │  Hybrid Node VPC            │
+│  eu-west-1                  │◄────────────►│  us-east-1 / eu-west-2      │
+│  10.128.0.0/16              │   Peering    │  10.130.0.0/16 / 10.129.0.0/16 │
+│                             │              │                             │
+│  ┌─────────────────────┐    │              │  ┌───────────────────────┐  │
+│  │ EKS Control Plane   │    │              │  │ Hybrid Node ASG       │  │
+│  │ - API server        │    │              │  │ - EC2 instances       │  │
+│  │ - Access entries    │    │              │  │ - IAM instance profile│  │
+│  └─────────────────────┘    │              │  │ - SSM activation      │  │
+│                             │              │  └───────────────────────┘  │
+│  ┌─────────────────────┐    │              │                             │
+│  │ Managed Node Groups │    │              │  Optional additional        │
+│  │ (same VPC)          │    │              │  hybrid node groups         │
+│  └─────────────────────┘    │              │                             │
+└─────────────────────────────┘              └─────────────────────────────┘
 ```
 
 ## Configuration
 
-### 1. Define Multiple VPCs
+### 1. Define VPCs and Peering
 
-In `config.yaml`, define your VPCs including the hybrid node VPC:
+In `config.yaml`, define the control plane VPC and any additional VPCs used for hybrid nodes.
+
+The `environments/dev-example/config.yaml` example currently defines:
+- `eu-west-1/example-com` as the control plane VPC
+- `eu-west-2/cf-idw` as an additional peered VPC
+- `us-east-1/cf-idw` as another peered VPC
+
+Example:
 
 ```yaml
 network:
+  default_region: "eu-west-1"
+  default_vpc: "example-com"
   vpc:
     regions:
       eu-west-1:
         example-com:
-          ipv4-cidr: 172.1.0.0/16
+          ipv4-cidr: 10.128.0.0/16
           subnets:
             default:
-              ipv4-cidr: 172.1.0.0/18
+              ipv4-cidr: 10.128.0.0/17
               private_subnets_enabled: true
               public_subnets_enabled: true
               igw: true
@@ -58,354 +77,327 @@ network:
                 - eu-west-1a
                 - eu-west-1b
                 - eu-west-1c
-        
-        # Additional VPC for hybrid nodes
-        hybrid-vpc:
-          ipv4-cidr: 172.2.0.0/16
+
+      us-east-1:
+        cf-idw:
+          ipv4-cidr: 10.130.0.0/16
           subnets:
             default:
-              ipv4-cidr: 172.2.0.0/18
+              ipv4-cidr: 10.130.0.0/17
               private_subnets_enabled: true
               public_subnets_enabled: true
               igw: true
               ngw: true
               availability-zones:
-                - eu-west-1a
-                - eu-west-1b
-                - eu-west-1c
-          # Configure VPC peering to control plane VPC
+                - us-east-1a
+                - us-east-1b
+                - us-east-1c
           peering:
             to-control-plane:
-              peer-vpc: example-com
+              peer-vpc: cf-idw
+              peer-region: eu-west-1
 ```
 
-### 2. Configure Hybrid Node Groups
+> Note: follow the VPC peering conventions already used in `environments/dev-example/config.yaml` for cross-region connectivity.
 
-Add `hybrid-node-groups` to your EKS cluster definition:
+### 2. Configure the EKS Cluster
+
+The EKS cluster must define its own VPC and subnets as usual. When `hybrid-node-groups` are present, the module also generates a `remote_network_config` containing the CIDR blocks of the hybrid-node VPCs.
+
+Example:
 
 ```yaml
 eks:
   regions:
     eu-west-1:
       cluster-name-0:
+        k8s-version: 1.30
         network:
-          vpc: example-com  # Control plane VPC
-        node-groups:
-          # Regular managed node groups...
-        
-        # Hybrid node groups in different VPC
-        hybrid-node-groups:
-          hybrid-compute:
-            network:
-              vpc: hybrid-vpc  # Different VPC!
-              region: eu-west-2  # Optional: deploy in different region
-              subnet:
-                name: default
-                kind: private
-              availability-zones:
-                - a
-                - b
-            desired-size: 2
-            min-size: 1
-            max-size: 5
-            instance-types:
-              - t3a.large
-            ami-type: amazon-linux-2/recommended  # or amazon-linux-2023/recommended
-            autoscaler-enabled: true
-            spot-enabled: false
-            block-device-mappings:
-              xvda:
-                volume-size: 50
-                volume-type: gp3
-                encrypted: true
-                delete-on-termination: true
-            exposed-ports:
-              traefik-nodeport:
-                number: 30443
-                protocol: tcp
-                cidr-filters:
-                  - 0.0.0.0/0
-            extra-iam-policies:
-              enable-ebs-creation: "arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy"
-              enable-efs-creation: "arn:aws:iam::aws:policy/service-role/AmazonEFSCSIDriverPolicy"
-              enable-ssm-access: "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
-            swap:
-              enabled: true
-              size: 4  # GB
-              behavior: LimitedSwap
+          vpc: example-com
+          subnets:
+            - name: default
+              kind: private
+            - name: default
+              kind: public
+```
+
+### 3. Configure Hybrid Node Groups
+
+Add `hybrid-node-groups` beneath the cluster definition.
+
+The current `dev-example` includes:
+
+```yaml
+hybrid-node-groups:
+  virginia:
+    node-kubernetes-io-role: public
+    network:
+      vpc: cf-idw
+      region: us-east-1
+      subnet:
+        name: default
+        kind: private
+      availability-zones:
+        - b
+    instance-types:
+      - t3a.large
+    desired-size: 1
+    min-size: 1
+    max-size: 1
+    ami-name-filter: "ami-amazon-linux-latest/al2023-ami-minimal-kernel-default-x86_64"
+    block-device-mappings:
+      xvda:
+        volume-size: 20
+        volume-type: gp3
+        encrypted: true
+        delete-on-termination: true
+    swap:
+      enabled: true
+      size: 4
+    autoscaler-enabled: false
+    cluster-log-retention-period: 7
+    exposed-ports:
+      traefik-nodeport:
+        number: 30443
+        protocol: tcp
+        cidr-filters:
+          - 0.0.0.0/0
+    extra-iam-policies:
+      enable-ebs-creation: "arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy"
+      enable-efs-creation: "arn:aws:iam::aws:policy/service-role/AmazonEFSCSIDriverPolicy"
+      enable-ssm-access: "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
 ```
 
 ## Configuration Options
 
 ### Required Fields
 
-- `network.vpc`: The VPC name where hybrid nodes will be created
-- `network.subnet.name`: Subnet name to use
-- `network.subnet.kind`: Either `public` or `private`
-- `instance-types`: Array of EC2 instance types
+- `network.vpc`: VPC name where the hybrid nodes are created
+- `network.region`: AWS region where the hybrid nodes are created
+- `network.subnet.name`: subnet name to use
+- `network.subnet.kind`: either `public` or `private`
+- `instance-types`: list of EC2 instance types
 
-### Optional Fields
+### Common Optional Fields
 
-- `network.region`: AWS region for the hybrid nodes (default: cluster region). **This enables cross-region hybrid nodes!**
-- `network.availability-zones`: Specific AZs to use (default: all AZs in subnet)
-- `desired-size`: Initial number of nodes (default: 1)
-- `min-size`: Minimum nodes (default: 1)
-- `max-size`: Maximum nodes (default: 3)
-- `ami-type`: AMI type path (default: `amazon-linux-2/recommended`)
-  - Options: `amazon-linux-2/recommended`, `amazon-linux-2023/recommended`
-- `autoscaler-enabled`: Enable cluster autoscaler (default: false)
-- `spot-enabled`: Use spot instances (default: false)
-- `spot-max-price`: Max spot price (empty = on-demand price)
-- `max-pods`: Maximum pods per node (optional)
-- `block-device-mappings`: EBS volume configuration
-- `exposed-ports`: Security group ingress rules
-- `extra-iam-policies`: Additional IAM policies to attach
-- `swap`: Swap configuration
-  - `enabled`: Enable/disable swap
-  - `size`: Swap size in GB
-  - `behavior`: `LimitedSwap` or `NoSwap`
+- `network.availability-zones`: specific AZ suffixes such as `a`, `b`, `c`
+- `desired-size`: desired ASG size, default `1`
+- `min-size`: minimum ASG size, default `1`
+- `max-size`: maximum ASG size, default `3`
+- `autoscaler-enabled`: add cluster-autoscaler tags to the ASG
+- `spot-enabled`: use EC2 spot instances
+- `spot-max-price`: optional max spot price
+- `block-device-mappings`: EBS device mapping configuration
+- `exposed-ports`: extra ingress rules on the hybrid-node security group
+- `extra-iam-policies`: additional IAM policies attached to the hybrid-node EC2 role
+- `swap.enabled`: whether swap should be configured or disabled via SSM association
+- `swap.size`: swap size in GiB when enabled
+- `swap.behavior`: kubelet swap behavior, defaults to `LimitedSwap`
+- `node-kubernetes-io-role`: logical node role label to expose on the node
+
+### AMI Setting
+
+The Terraform currently reads the AMI SSM parameter from:
+- `ami-ssm-name-filter` (default: `ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64`)
+
+Example from Terraform:
+
+```hcl
+name = "/aws/service/${ chomp(try("${hng_values.ami-ssm-name-filter}", "ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64")) }"
+```
+
+> Note: `environments/dev-example/config.yaml` currently uses `ami-name-filter`, but the Terraform code in `tg-modules/eks/terragrunt.hcl` expects `ami-ssm-name-filter`. If you want a non-default AMI path, use the Terraform-supported key name.
 
 ## How It Works
 
-### 1. VPC Peering
+### 1. Cluster Network Configuration
 
-The VPC module automatically creates:
-- VPC peering connections between VPCs with `peering` configuration
-- Route table entries in both VPCs for the peered CIDR blocks
-- Accepts the peering connection automatically
+When hybrid node groups are defined, the EKS cluster module adds `remote_network_config` with the CIDR blocks of the hybrid-node VPCs. This allows the control plane to understand remote node network ranges.
 
-### 2. Hybrid Node Provisioning
+The module also adds security group rules allowing traffic from hybrid-node VPC CIDRs into the EKS control plane managed security group.
 
-For each hybrid node group, the EKS module creates:
+### 2. VPC Connectivity
 
-**IAM Resources:**
-- IAM role with assume role policy for EC2 service
-- Policy attachments for: EKS Worker Node, CNI, ECR, SSM, ALB
-- IAM instance profile
+Hybrid nodes depend on routed connectivity between the control plane VPC and every hybrid-node VPC. In the repository examples this is achieved with VPC peering and matching route propagation between regions.
 
-**Security Groups:**
-- Security group for hybrid nodes
-- Ingress rules for kubelet (10250), HTTPS (443), and inter-node communication
-- Egress rule for all traffic
-- Bidirectional rules between control plane and hybrid nodes
-- Custom exposed port rules
+### 3. Hybrid Node IAM and Registration
 
-**Autoscaling Group:**
-- CloudPosse EC2 autoscaling group module (v0.40.0)
-- Launch template with:
-  - Latest EKS-optimized AMI for specified version and type
-  - User data script using nodeadm for cluster join
-  - Block device mappings
-  - Security groups
-  - IAM instance profile
+For each hybrid node group, Terraform creates:
+- an EC2 IAM role in the hybrid node region
+- an IAM instance profile attached to the EC2 instances
+- a dedicated EKS hybrid node role module
+- `aws_ssm_activation` for registration bootstrap
+- `aws_eks_access_entry` with `type = "HYBRID_LINUX"`
+- extra IAM policy attachments required for node operation
 
-**SSM Associations:**
-- Optional swap configuration via SSM Run Command
-- Targets instances by ASG tags
+This means the implementation relies on **SSM hybrid registration plus EKS hybrid access entries**, not a plain `nodeadm`-only bootstrap path.
 
-### 3. Cluster Join Process
+### 4. Hybrid Node Compute
 
-Hybrid nodes join the cluster using nodeadm with direct API server connection:
+Each hybrid node group is backed by an EC2 Auto Scaling Group. The ASG:
+- launches into the specified subnet(s)
+- uses the selected SSM AMI parameter path
+- attaches the hybrid node instance profile
+- optionally enables spot market options
+- optionally adds cluster-autoscaler tags
 
-```bash
-#!/bin/bash
-set -ex
+### 5. Security Groups
 
-# Get cluster information
-CLUSTER_NAME=<cluster-name>
-API_SERVER_ENDPOINT=<api-server-endpoint>
-CERT_AUTHORITY=<base64-encoded-ca>
-CLUSTER_CIDR=<service-ipv4-cidr>
-EKS_CLUSTER_VERSION=<version>
+For each hybrid node group, the module creates a dedicated security group with:
+- all outbound traffic allowed
+- optional ingress rules from `exposed-ports`
+- broad ingress from the control-plane and hybrid-node VPC CIDR blocks so inter-VPC cluster communication works
 
-# Create NodeConfig
-cat <<EOF > /tmp/nodeconfig.yaml
-apiVersion: node.eks.aws/v1alpha1
-kind: NodeConfig
-spec:
-  cluster:
-    name: $CLUSTER_NAME
-    apiServerEndpoint: $API_SERVER_ENDPOINT
-    certificateAuthority: $CERT_AUTHORITY
-    cidr: $CLUSTER_CIDR
-EOF
+### 6. SSM Post-Bootstrap Configuration
 
-# Install nodeadm CLI
-curl -o /tmp/nodeadm.tar.gz "https://hybrid-assets.eks.amazonaws.com/releases/latest/bin/linux/amd64/nodeadm.tar.gz"
-tar -xzf /tmp/nodeadm.tar.gz -C /usr/local/bin/
-chmod +x /usr/local/bin/nodeadm
+The module configures SSM associations for hybrid and standard node groups to perform extra node setup. This currently includes capabilities such as:
+- enabling swap
+- disabling swap
+- adjusting kubelet `max-pods` in some node group flows
+- basic bootstrap package installation in standard node groups
 
-# Install EKS dependencies
-nodeadm install $EKS_CLUSTER_VERSION
+### 7. Hybrid Maintenance Manifests
 
-# Initialize the node
-nodeadm init -c file:///tmp/nodeconfig.yaml
-```
-
-The nodeadm process:
-1. Installs containerd, kubelet, and required dependencies
-2. Configures kubelet with cluster connection details from NodeConfig
-3. Uses EC2 instance profile for IAM authentication
-4. Joins node to the cluster via API server endpoint
-5. Node appears in cluster and is ready for scheduling
-
-### 4. SSM Configuration
-
-The implementation uses:
-- **EC2 Instance Profile**: Standard IAM authentication for EC2 instances
-- **SSM Associations**: Optional post-bootstrap configuration for swap and other settings
-- **nodeadm CLI**: Official EKS tool for node management
-
-### 5. Remote Network Configuration (Optional)
-
-For true on-premises or edge hybrid nodes (not EC2), you would need to configure:
-- **remoteNodeNetworks**: CIDR ranges for nodes outside AWS
-- **remotePodNetworks**: CIDR ranges for pods on remote nodes
-
-These are cluster-level settings that tell EKS how to route traffic to/from on-premises infrastructure. For EC2 instances in AWS VPCs, VPC peering handles the routing automatically.
+When hybrid node groups are enabled, the module also applies Kubernetes manifests from `./assets/k8s-manifests` using `kubectl_manifest`. These are described in the Terraform as maintenance jobs intended to help keep the cluster healthy around hybrid/CNI-related operations.
 
 ## Security
 
 ### Network Security
 
-- **VPC Peering**: Isolated network communication between VPCs
-- **Security Groups**: 
-  - Control plane ↔ Hybrid nodes: ports 443, 10250
-  - Hybrid nodes ↔ Hybrid nodes: all ports
-  - Custom exposed ports as configured
+- Hybrid nodes communicate with the control plane over VPC-to-VPC routing
+- The EKS managed security group is opened to the CIDR blocks of hybrid-node VPCs
+- Each hybrid node group gets its own security group
+- Additional public or private application ports can be opened with `exposed-ports`
 
 ### IAM Security
 
-Hybrid nodes have the minimum required permissions:
-- `AmazonEKSWorkerNodePolicy`: Join cluster and report status
-- `AmazonEKS_CNI_Policy`: Configure pod networking
-- `AmazonEC2ContainerRegistryReadOnly`: Pull container images
-- `AmazonSSMManagedInstanceCore`: SSM management
-- Custom policies as configured
+Hybrid nodes are granted permissions through a combination of:
+- EC2 role attachments in the hybrid-node region
+- the EKS hybrid node role module
+- EKS access entries for the cluster
+- optional additional IAM policies from configuration
+
+By default, the implementation attaches policies including:
+- `AmazonEKSWorkerNodePolicy`
+- `AmazonEKS_CNI_Policy`
+- `AmazonEC2ContainerRegistryReadOnly`
+- `AmazonSSMManagedInstanceCore`
+- ALB ingress policy
+- any configured extra policies
 
 ### Best Practices
 
-1. **Use Private Subnets**: Deploy hybrid nodes in private subnets with NAT gateway
-2. **Encrypt EBS Volumes**: Set `encrypted: true` in block device mappings
-3. **Limit CIDR Blocks**: Restrict `exposed-ports` to specific IP ranges
-4. **Enable SSM**: Provides secure shell access without SSH keys
-5. **Use Spot Instances Carefully**: Only for fault-tolerant workloads
+1. Use private subnets for hybrid nodes where possible
+2. Ensure VPC CIDR ranges do not overlap
+3. Keep peering routes symmetric across all participating VPCs
+4. Restrict `exposed-ports` to trusted CIDRs
+5. Encrypt EBS volumes for hybrid node root disks
+6. Validate the correct AMI SSM parameter key is being used
 
 ## Monitoring and Operations
 
-### View Hybrid Nodes
+### View Nodes
 
 ```bash
-kubectl get nodes -l node.kubernetes.io/instance-type
+kubectl get nodes
 ```
 
-### Check Node Status
+### Check Hybrid Node Labels
 
 ```bash
-kubectl describe node <node-name>
+kubectl get nodes --show-labels
 ```
 
-### SSM Session
+### Check EKS Access Entries
 
-Connect to a hybrid node:
+```bash
+aws eks list-access-entries --cluster-name <cluster-name> --region <cluster-region>
+```
+
+### Start an SSM Session
 
 ```bash
 aws ssm start-session --target <instance-id>
 ```
 
-### View Logs
-
-Check bootstrap logs:
+### Check SSM Activation State
 
 ```bash
-# Via SSM
-aws ssm start-session --target <instance-id>
-sudo tail -f /var/log/cloud-init-output.log
-
-# Via CloudWatch (if configured)
-aws logs tail /aws/eks/<cluster-name>/hybrid-nodes
+aws ssm describe-instance-information
 ```
 
 ## Troubleshooting
 
-### Nodes Not Joining Cluster
+### Hybrid Nodes Not Registering
 
-1. Check VPC peering status
-2. Verify security group rules allow traffic
-3. Check bootstrap logs: `/var/log/cloud-init-output.log`
-4. Verify IAM role has correct policies
-5. Check cluster endpoint accessibility
+1. Verify inter-VPC routing and peering in both directions
+2. Verify the hybrid node VPC CIDR is included in the cluster remote network configuration
+3. Check that the SSM activation exists and is not expired
+4. Confirm the EKS access entry exists with type `HYBRID_LINUX`
+5. Confirm the instance profile and IAM role attachments were created successfully
+6. Check instance reachability to required AWS APIs and the cluster endpoint
 
-### Network Issues
+### Networking Problems
 
-1. Verify route tables have peering routes
-2. Check security group rules
-3. Test connectivity: `telnet <cluster-endpoint> 443`
+1. Verify non-overlapping CIDRs across all VPCs
+2. Check route tables in every peered VPC
+3. Check the control plane managed security group ingress rule for hybrid VPC CIDRs
+4. Check the hybrid node security group ingress rules and any `exposed-ports`
 
-### SSM Associations Not Running
+### SSM Issues
 
-1. Verify SSM agent is running: `systemctl status amazon-ssm-agent`
-2. Check IAM role has `AmazonSSMManagedInstanceCore`
-3. View association status in SSM console
+1. Verify the instance has `AmazonSSMManagedInstanceCore`
+2. Check Systems Manager activation and managed instance status
+3. Inspect SSM association execution status in the AWS console
+4. Use Session Manager to inspect instance logs and system state
+
+### AMI Issues
+
+1. Verify the configured AMI parameter key exists in the hybrid node region
+2. Prefer `ami-ssm-name-filter` in config because that is what Terraform currently reads
+3. If using the sample config, reconcile `ami-name-filter` vs `ami-ssm-name-filter`
 
 ## Outputs
 
-The implementation provides these outputs:
+The implementation currently documents or implies useful outputs/resources around:
+- VPC peering connectivity from the VPC module
+- EKS cluster resources
+- hybrid-node IAM roles, ASGs, and security groups created in Terraform
 
-### VPC Module
+If you need stable Terraform outputs for hybrid node groups, verify the exact exported outputs in the module being consumed.
 
-```hcl
-output "vpc_peering_connections" {
-  # Map of peering connection IDs and statuses
-}
-```
+## Current Limitations and Caveats
 
-### EKS Module
+1. **Documentation drift:** older references to `nodeadm`-only bootstrap are outdated
+2. **Config key mismatch:** example config uses `ami-name-filter` while Terraform expects `ami-ssm-name-filter`
+3. **AWS-focused design:** this implementation is built around AWS VPCs, EC2, SSM, and EKS hybrid-node access entries
+4. **Peering complexity increases with each region:** every additional hybrid-node VPC must be routable to the control plane VPC and, in some topologies, to other hybrid-node VPCs as well
+5. **SSM activation expiry matters:** the Terraform sets an activation expiration window, so lifecycle handling should be considered for long-running environments
 
-```hcl
-output "hybrid_node_groups" {
-  # Map with:
-  # - asg_name: Autoscaling group name
-  # - asg_id: Autoscaling group ID
-  # - iam_role_arn: IAM role ARN
-  # - iam_role_name: IAM role name
-  # - security_group_id: Security group ID
-}
-```
+## Dev Example Summary
 
-## Limitations
+The current `environments/dev-example/config.yaml` demonstrates:
+- a control-plane cluster in `eu-west-1`
+- managed node groups in the control-plane VPC
+- a hybrid node group named `virginia`
+- hybrid infrastructure in `us-east-1`
+- supporting VPC definitions in `eu-west-1`, `eu-west-2`, and `us-east-1`
+- cross-region peering configuration between those VPCs
 
-1. **Same Region Only**: VPC peering only works within the same AWS region
-2. **CIDR Overlap**: VPCs must have non-overlapping CIDR blocks
-3. **AMI Support**: Only EKS-optimized AMIs (AL2 and AL2023) are supported
-4. **Manual Peering Acceptance**: For cross-account peering, manual acceptance is required
+## Migration Note
 
-## Migration from Managed Node Groups
-
-To migrate from managed node groups to hybrid nodes:
-
-1. Add hybrid node group configuration
+If you are migrating from managed node groups to hybrid node groups in this repository:
+1. Add the hybrid node group configuration and required peered VPC definitions
 2. Apply infrastructure changes
-3. Cordon and drain managed node group nodes
-4. Remove managed node group configuration
-5. Apply infrastructure changes again
-
-## Cost Considerations
-
-Hybrid nodes can reduce costs by:
-- Using spot instances (`spot-enabled: true`)
-- Deploying in regions with lower EC2 pricing
-- Using reserved instances for stable workloads
-- Rightsizing with appropriate instance types
-
-## Examples
-
-See `environments/dev-example/config.yaml` for a complete working example.
+3. Validate SSM activation, access entry creation, and node registration
+4. Drain workloads from the old managed node groups if needed
+5. Remove or resize managed node groups
+6. Apply again
 
 ## Support
 
 For issues or questions:
-1. Check the troubleshooting section
-2. Review CloudWatch logs
-3. Check AWS Systems Manager Run Command history
+1. Check the Terraform in `tg-modules/eks/terragrunt.hcl`
+2. Compare with `environments/dev-example/config.yaml`
+3. Inspect AWS SSM, EKS access entries, and EC2 Auto Scaling resources
 4. Open an issue in the repository
