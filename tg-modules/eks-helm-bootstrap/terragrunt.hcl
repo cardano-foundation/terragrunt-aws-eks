@@ -78,6 +78,13 @@ provisioner: kubernetes.io/aws-ebs
 reclaimPolicy: Delete
 volumeBindingMode: WaitForFirstConsumer
 allowVolumeExpansion: true
+allowedTopologies:
+  - matchLabelExpressions:
+      - key: topology.kubernetes.io/zone
+        values:
+        %{~ for zone in ["a", "b", "c", "d", "e", "f"] ~}
+        - ${eks_region_k}${zone}
+        %{~ endfor ~}
 EOT
 }
 
@@ -94,6 +101,13 @@ provisioner: kubernetes.io/aws-ebs
 reclaimPolicy: Delete
 volumeBindingMode: WaitForFirstConsumer
 allowVolumeExpansion: true
+allowedTopologies:
+  - matchLabelExpressions:
+      - key: topology.kubernetes.io/zone
+        values:
+        %{~ for zone in ["a", "b", "c", "d", "e", "f"] ~}
+        - ${eks_region_k}${zone}
+        %{~ endfor ~}
 EOT
 }
 
@@ -112,6 +126,13 @@ provisioner: ebs.csi.aws.com
 reclaimPolicy: Delete
 volumeBindingMode: WaitForFirstConsumer
 allowVolumeExpansion: true
+allowedTopologies:
+  - matchLabelExpressions:
+      - key: topology.kubernetes.io/zone
+        values:
+        %{~ for zone in ["a", "b", "c", "d", "e", "f"] ~}
+        - ${eks_region_k}${zone}
+        %{~ endfor ~}
 EOT
 }
 

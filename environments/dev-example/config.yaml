@@ -65,13 +65,46 @@ eks:
             <<: *default-eks-public-access-cidrs
           subnets:
             - name: default
-              kind: public
-            - name: default
               kind: private
+            - name: default
+              kind: public
         addons:
           <<: *default-eks-addons
         helm-charts:
           <<: *default-helm-charts
+        hybrid-node-groups:
+          virginia:
+            node-kubernetes-io-role: public
+            network:
+              vpc: cf-idw
+              region: us-east-1
+              subnet:
+                name: default
+                kind: private
+              availability-zones:
+                - b
+            instance-types:
+              - t3a.large
+            desired-size: 1
+            min-size: 1
+            max-size: 1 
+            # set ami filter to amazon linux 2023
+            ami-name-filter: "ami-amazon-linux-latest/al2023-ami-minimal-kernel-default-x86_64"
+            block-device-mappings:
+              xvda:
+                volume-size: 20 # gbs
+                volume-type: gp3
+                encrypted: true
+                delete-on-termination: true
+            swap:
+              enabled: true
+              size: 4 # gbs
+            autoscaler-enabled: false
+            cluster-log-retention-period: 7
+            exposed-ports:
+              <<: *default-exposed-ports
+            extra-iam-policies:
+              <<: *default-iam-policies
         # FIXME: missing ec2 names while using managed node groups
         # https://github.com/terraform-aws-modules/terraform-aws-eks/issues/2032  
         # potential fix: use our own launch templates
@@ -83,6 +116,10 @@ eks:
                 kind: public
               availability-zones:
                 - b
+            node-taints:
+              role:
+                value: public
+                effect: PREFER_NO_SCHEDULE
             desired-size: 1
             min-size: 1
             max-size: 3
@@ -160,10 +197,13 @@ network:
     regions:
       eu-west-1:
         example-com:
-          ipv4-cidr: 172.1.0.0/16
+          # NOTE:
+          # - We will be using 10.128.0.0/9 for VPCs
+          # - Assuming 1 public + 1 privates ubnet per vpc, we use /16 (aws max) for the whole VPC and /17 for each subnet
+          ipv4-cidr: 10.128.0.0/16 # 10.128.0.0-10.128.255.254
           subnets:
             default:
-              ipv4-cidr: 172.1.0.0/18
+              ipv4-cidr: 10.128.0.0/17 # 10.128.0.0-10.128.127.254
               private_subnets_enabled: true
               public_subnets_enabled: true
               igw: true
@@ -172,3 +212,44 @@ network:
               - eu-west-1a
               - eu-west-1b
               - eu-west-1c
+
+      eu-west-2:
+        cf-idw:
+         ipv4-cidr: 10.129.0.0/16
+         subnets:
+           default:
+             ipv4-cidr: 10.129.0.0/17
+             private_subnets_enabled: true
+             public_subnets_enabled: true
+             igw: true
+             ngw: true
+             availability-zones:
+             - eu-west-2a
+             - eu-west-2b
+             - eu-west-2c
+         peering:
+           to-control-plane:
+              peer-vpc: cf-idw
+              peer-region: eu-west-1
+
+      us-east-1:
+        cf-idw:
+         ipv4-cidr: 10.130.0.0/16
+         subnets:
+           default:
+             ipv4-cidr: 10.130.0.0/17
+             private_subnets_enabled: true
+             public_subnets_enabled: true
+             igw: true
+             ngw: true
+             availability-zones:
+             - us-east-1a
+             - us-east-1b
+             - us-east-1c
+         peering:
+           to-control-plane:
+              peer-vpc: cf-idw
+              peer-region: eu-west-1
+           to-eu-west-2: # routes go both ways, so it's only each new region that needs to add a peering for every previous region 
+              peer-vpc: cf-idw
+              peer-region: eu-west-2

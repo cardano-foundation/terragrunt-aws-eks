@@ -1,0 +1,363 @@
+# node-cleanup-config.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: node-cleanup-config
+  namespace: kube-system
+data:
+  # Time in minutes after which NotReady nodes should be cleaned up
+  cleanup_threshold_minutes: "4"
+  # Whether to perform dry run (true) or actual cleanup (false)
+  dry_run: "false"
+  # Node label selector to target specific nodes (optional)
+  node_selector: "eks.amazonaws.com/compute-type=hybrid-ec2"
+  # Grace period for pod deletion in seconds
+  pod_deletion_grace_period: "30"
+  # Whether to drain nodes before deletion
+  drain_nodes: "true"
+  # Interval in seconds between cleanup runs
+  cleanup_interval_seconds: "15"
+---
+# node-cleanup-rbac.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: node-cleanup-sa
+  namespace: kube-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: node-cleanup-role
+rules:
+- apiGroups: [""]
+  resources: ["nodes"]
+  verbs: ["get", "list", "patch", "delete"]
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get", "list", "delete", "deletecollection"]
+- apiGroups: [""]
+  resources: ["pods/eviction"]
+  verbs: ["create"]
+- apiGroups: ["apps"]
+  resources: ["daemonsets"]
+  verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: node-cleanup-binding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: node-cleanup-role
+subjects:
+- kind: ServiceAccount
+  name: node-cleanup-sa
+  namespace: kube-system
+---
+# node-cleanup-script.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: node-cleanup-script
+  namespace: kube-system
+data:
+  cleanup.sh: |
+    #!/bin/bash
+    set -euo pipefail
+
+    # Load configuration
+    CLEANUP_THRESHOLD_MINUTES=${CLEANUP_THRESHOLD_MINUTES:-30}
+    DRY_RUN=${DRY_RUN:-false}
+    NODE_SELECTOR=${NODE_SELECTOR:-""}
+    POD_DELETION_GRACE_PERIOD=${POD_DELETION_GRACE_PERIOD:-30}
+    DRAIN_NODES=${DRAIN_NODES:-true}
+
+    NOTREADY_SINCE_ANNOTATION="hybrid.eks.amazonaws.com/notready-since"
+
+    echo "Starting node cleanup run at $(date)"
+    echo "Configuration:"
+    echo "  Cleanup threshold: ${CLEANUP_THRESHOLD_MINUTES} minutes"
+    echo "  Dry run: ${DRY_RUN}"
+    echo "  Node selector: ${NODE_SELECTOR}"
+    echo "  Drain nodes: ${DRAIN_NODES}"
+
+    log() {
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1"
+    }
+
+    annotate_notready_since() {
+        local node_name=$1
+        local timestamp=$2
+
+        if [[ "$DRY_RUN" == "true" ]]; then
+            log "[DRY RUN] Would annotate node $node_name with ${NOTREADY_SINCE_ANNOTATION}=$timestamp"
+            return 0
+        fi
+
+        kubectl annotate node "$node_name" "${NOTREADY_SINCE_ANNOTATION}=$timestamp" --overwrite >/dev/null
+    }
+
+    clear_notready_since() {
+        local node_name=$1
+
+        if [[ "$DRY_RUN" == "true" ]]; then
+            log "[DRY RUN] Would remove annotation ${NOTREADY_SINCE_ANNOTATION} from node $node_name"
+            return 0
+        fi
+
+        kubectl annotate node "$node_name" "${NOTREADY_SINCE_ANNOTATION}-" >/dev/null 2>&1 || true
+    }
+
+    parse_timestamp_to_epoch() {
+        local timestamp=$1
+
+        if [[ -z "$timestamp" ]]; then
+            return 1
+        fi
+
+        if [[ "$timestamp" =~ ^[0-9]+$ ]]; then
+            echo "$timestamp"
+            return 0
+        fi
+
+        jq -nr --arg ts "$timestamp" '$ts | fromdateiso8601' 2>/dev/null
+    }
+
+    is_node_stale() {
+        local node_name=$1
+        local node_info
+        node_info=$(kubectl get node "$node_name" -o json)
+
+        local ready_condition
+        ready_condition=$(echo "$node_info" | jq -c '.status.conditions[] | select(.type=="Ready")')
+
+        if [[ -z "$ready_condition" ]]; then
+            log "Node $node_name has no Ready condition; skipping"
+            return 1
+        fi
+
+        local status
+        status=$(echo "$ready_condition" | jq -r '.status')
+
+        local annotation_ts
+        annotation_ts=$(echo "$node_info" | jq -r --arg ann "$NOTREADY_SINCE_ANNOTATION" '.metadata.annotations[$ann] // empty')
+
+        local current_epoch
+        current_epoch=$(date -u +%s)
+
+        if [[ "$status" == "True" ]]; then
+            if [[ -n "$annotation_ts" ]]; then
+                log "Node $node_name is Ready again; clearing ${NOTREADY_SINCE_ANNOTATION}"
+                clear_notready_since "$node_name"
+            fi
+            return 1
+        fi
+
+        if [[ -z "$annotation_ts" ]]; then
+            local now_rfc3339
+            now_rfc3339=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+            log "Node $node_name is NotReady/Unknown first observed at $now_rfc3339"
+            annotate_notready_since "$node_name" "$now_rfc3339"
+            return 1
+        fi
+
+        local annotation_epoch
+        annotation_epoch=$(parse_timestamp_to_epoch "$annotation_ts" || true)
+
+        if [[ -z "$annotation_epoch" ]]; then
+            local now_rfc3339
+            now_rfc3339=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+            log "Node $node_name has invalid ${NOTREADY_SINCE_ANNOTATION}=$annotation_ts; resetting to $now_rfc3339"
+            annotate_notready_since "$node_name" "$now_rfc3339"
+            return 1
+        fi
+
+        local diff_minutes=$(( (current_epoch - annotation_epoch) / 60 ))
+        log "Node $node_name has been NotReady for $diff_minutes minutes (since $annotation_ts)"
+
+        if [[ $diff_minutes -ge $CLEANUP_THRESHOLD_MINUTES ]]; then
+            return 0
+        fi
+
+        return 1
+    }
+
+    drain_node() {
+        local node_name=$1
+        log "Draining node: $node_name"
+
+        if [[ "$DRY_RUN" == "true" ]]; then
+            log "[DRY RUN] Would drain node: $node_name"
+            return 0
+        fi
+
+        kubectl cordon "$node_name" || {
+            log "Failed to cordon node $node_name"
+            return 1
+        }
+
+        kubectl drain "$node_name" \
+            --ignore-daemonsets \
+            --delete-emptydir-data \
+            --force \
+            --grace-period="$POD_DELETION_GRACE_PERIOD" \
+            --timeout=180s || {
+            log "Failed to drain node $node_name"
+            return 1
+        }
+
+        log "Successfully drained node: $node_name"
+        return 0
+    }
+
+    delete_node() {
+        local node_name=$1
+        log "Deleting node: $node_name"
+
+        if [[ "$DRY_RUN" == "true" ]]; then
+            log "[DRY RUN] Would delete node: $node_name"
+            return 0
+        fi
+
+        kubectl delete node "$node_name" || {
+            log "Failed to delete node $node_name"
+            return 1
+        }
+
+        log "Successfully deleted node: $node_name"
+        return 0
+    }
+
+    main() {
+        local nodes_cleaned=0
+        local nodes_failed=0
+
+        local kubectl_cmd="kubectl get nodes -o json"
+        if [[ -n "$NODE_SELECTOR" ]]; then
+            kubectl_cmd="$kubectl_cmd --selector=$NODE_SELECTOR"
+        fi
+
+        local nodes_json
+        nodes_json=$($kubectl_cmd)
+        local node_names
+        node_names=$(echo "$nodes_json" | jq -r '.items[].metadata.name')
+
+        log "Checking $(echo "$node_names" | wc -w) nodes for cleanup"
+
+        for node_name in $node_names; do
+            if is_node_stale "$node_name"; then
+                log "Node $node_name is stale and will be cleaned up"
+
+                if [[ "$DRAIN_NODES" == "true" ]]; then
+                    if ! drain_node "$node_name"; then
+                        log "Failed to drain node $node_name, skipping deletion"
+                        nodes_failed=$((nodes_failed + 1))
+                        continue
+                    fi
+                fi
+
+                if delete_node "$node_name"; then
+                    nodes_cleaned=$((nodes_cleaned + 1))
+                else
+                    nodes_failed=$((nodes_failed + 1))
+                fi
+            else
+                log "Node $node_name is healthy or not stale enough"
+            fi
+        done
+
+        log "Cleanup completed. Nodes cleaned: $nodes_cleaned, Nodes failed: $nodes_failed"
+        return 0
+    }
+
+    main
+---
+# node-cleanup-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: node-cleanup
+  namespace: kube-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: node-cleanup
+  template:
+    metadata:
+      labels:
+        app: node-cleanup
+    spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: x-eks.amazonaws.com/managed-node
+                operator: In
+                values:
+                - "true"
+      serviceAccountName: node-cleanup-sa
+      restartPolicy: Always
+      containers:
+      - name: node-cleanup
+        image: ghcr.io/rcmorano/bjck:sha-0a317ae
+        env:
+        - name: CLEANUP_THRESHOLD_MINUTES
+          valueFrom:
+            configMapKeyRef:
+              name: node-cleanup-config
+              key: cleanup_threshold_minutes
+        - name: DRY_RUN
+          valueFrom:
+            configMapKeyRef:
+              name: node-cleanup-config
+              key: dry_run
+        - name: NODE_SELECTOR
+          valueFrom:
+            configMapKeyRef:
+              name: node-cleanup-config
+              key: node_selector
+        - name: POD_DELETION_GRACE_PERIOD
+          valueFrom:
+            configMapKeyRef:
+              name: node-cleanup-config
+              key: pod_deletion_grace_period
+        - name: DRAIN_NODES
+          valueFrom:
+            configMapKeyRef:
+              name: node-cleanup-config
+              key: drain_nodes
+        - name: CLEANUP_INTERVAL_SECONDS
+          valueFrom:
+            configMapKeyRef:
+              name: node-cleanup-config
+              key: cleanup_interval_seconds
+        command:
+        - /bin/bash
+        - -c
+        - |
+          set -euo pipefail
+          while true; do
+            echo "Starting scheduled cleanup iteration at $(date)"
+            /scripts/cleanup.sh || echo "Cleanup run failed; continuing loop"
+            echo "Sleeping for ${CLEANUP_INTERVAL_SECONDS}s"
+            sleep "${CLEANUP_INTERVAL_SECONDS}"
+          done
+        volumeMounts:
+        - name: cleanup-script
+          mountPath: /scripts
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "100m"
+          limits:
+            memory: "128Mi"
+            cpu: "200m"
+      volumes:
+      - name: cleanup-script
+        configMap:
+          name: node-cleanup-script
+          defaultMode: 0755

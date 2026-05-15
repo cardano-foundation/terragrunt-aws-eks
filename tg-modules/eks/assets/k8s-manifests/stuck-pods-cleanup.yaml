@@ -1,0 +1,572 @@
+# pod-cleanup-config.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: pod-cleanup-config
+  namespace: kube-system
+data:
+  # Whether to perform dry run (true) or actual cleanup (false)
+  dry_run: "false"
+
+  # Pod states to monitor and their timeout in minutes
+  # Format: "state1:timeout1,state2:timeout2,..."
+  #pod_states_config: "Terminating:10,ContainerCreating:15,ImagePullBackOff:20,ErrImagePull:10,CrashLoopBackOff:30,CreateContainerConfigError:5,InvalidImageName:5,CreateContainerError:10"
+  pod_states_config: "Terminating:1,ContainerCreating:3,Init:5"
+
+  # Namespace selector (empty means all namespaces, comma-separated list for specific namespaces)
+  namespace_selector: ""
+
+  # Namespace exclusions (comma-separated list of namespaces to exclude)
+  # excluded_namespaces: "kube-system,kube-public,kube-node-lease"
+  excluded_namespaces: ""
+
+  # Pod label selector to target specific pods (optional)
+  pod_selector: ""
+
+  # Grace period for pod deletion in seconds (0 for immediate deletion)
+  deletion_grace_period: "0"
+
+  # Whether to check if pods are owned by controllers before deletion
+  check_controller_ownership: "true"
+
+  # Whether to delete pods owned by controllers (Jobs, Deployments, etc.)
+  delete_controller_owned_pods: "true"
+
+  # Maximum number of pods to delete in a single run (0 for no limit)
+  max_pods_per_run: "0"
+
+  # Delay between cleanup iterations in seconds
+  loop_interval_seconds: "15"
+---
+# pod-cleanup-rbac.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: pod-cleanup-sa
+  namespace: kube-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: pod-cleanup-role
+rules:
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get", "list", "watch", "delete", "deletecollection"]
+- apiGroups: [""]
+  resources: ["pods/status"]
+  verbs: ["get"]
+- apiGroups: [""]
+  resources: ["namespaces"]
+  verbs: ["get", "list"]
+- apiGroups: ["apps"]
+  resources: ["deployments", "replicasets", "daemonsets", "statefulsets"]
+  verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: pod-cleanup-binding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: pod-cleanup-role
+subjects:
+- kind: ServiceAccount
+  name: pod-cleanup-sa
+  namespace: kube-system
+---
+# pod-cleanup-script.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: pod-cleanup-script
+  namespace: kube-system
+data:
+  cleanup.sh: |
+    #!/bin/bash
+    set -euo pipefail
+
+    # Load configuration
+    DRY_RUN=${DRY_RUN:-true}
+    POD_STATES_CONFIG=${POD_STATES_CONFIG:-"Terminating:10,ContainerCreating:15"}
+    NAMESPACE_SELECTOR=${NAMESPACE_SELECTOR:-""}
+    EXCLUDED_NAMESPACES=${EXCLUDED_NAMESPACES:-""}
+    POD_SELECTOR=${POD_SELECTOR:-""}
+    DELETION_GRACE_PERIOD=${DELETION_GRACE_PERIOD:-0}
+    CHECK_CONTROLLER_OWNERSHIP=${CHECK_CONTROLLER_OWNERSHIP:-true}
+    DELETE_CONTROLLER_OWNED_PODS=${DELETE_CONTROLLER_OWNED_PODS:-false}
+    MAX_PODS_PER_RUN=${MAX_PODS_PER_RUN:-50}
+
+    echo "Starting pod cleanup job at $(date)"
+    echo "Configuration:"
+    echo "  Dry run: ${DRY_RUN}"
+    echo "  Pod states config: ${POD_STATES_CONFIG}"
+    echo "  Namespace selector: ${NAMESPACE_SELECTOR}"
+    echo "  Excluded namespaces: ${EXCLUDED_NAMESPACES}"
+    echo "  Pod selector: ${POD_SELECTOR}"
+    echo "  Check controller ownership: ${CHECK_CONTROLLER_OWNERSHIP}"
+    echo "  Delete controller owned pods: ${DELETE_CONTROLLER_OWNED_PODS}"
+    echo "  Max pods per run: ${MAX_PODS_PER_RUN}"
+
+    # Function to log with timestamp
+    log() {
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" >&2
+    }
+
+    parse_timestamp_to_epoch() {
+        local timestamp=$1
+
+        if [[ -z "$timestamp" || "$timestamp" == "null" ]]; then
+            return 1
+        fi
+
+        local epoch
+        if ! epoch=$(jq -nr --arg ts "$timestamp" '$ts | fromdateiso8601' 2>/dev/null); then
+            return 1
+        fi
+
+        echo "$epoch"
+    }
+
+    # Parse pod states configuration into associative arrays
+    declare -A POD_STATES
+    declare -A STATE_TIMEOUTS
+
+    parse_pod_states_config() {
+        IFS=',' read -ra STATES <<< "$POD_STATES_CONFIG"
+        for state_config in "${STATES[@]}"; do
+            IFS=':' read -ra STATE_PARTS <<< "$state_config"
+            if [[ ${#STATE_PARTS[@]} -eq 2 ]]; then
+                local state="${STATE_PARTS[0]}"
+                local timeout="${STATE_PARTS[1]}"
+                POD_STATES["$state"]=1
+                STATE_TIMEOUTS["$state"]=$timeout
+                log "Configured state: $state with timeout: ${timeout} minutes"
+            fi
+        done
+    }
+
+    # Function to get pod phase or container state
+    get_pod_state() {
+        local pod_json=$1
+        local phase=$(echo "$pod_json" | jq -r '.status.phase // "Unknown"')
+
+        # Check for specific container states
+        local container_states=$(echo "$pod_json" | jq -r '.status.containerStatuses[]?.state | keys[]?' 2>/dev/null || echo "")
+        local init_container_states=$(echo "$pod_json" | jq -r '.status.initContainerStatuses[]?.state | keys[]?' 2>/dev/null || echo "")
+
+        # Check for Terminating state (deletionTimestamp exists)
+        local deletion_timestamp=$(echo "$pod_json" | jq -r '.metadata.deletionTimestamp // empty')
+        if [[ -n "$deletion_timestamp" ]]; then
+            echo "Terminating"
+            return
+        fi
+
+        # Check container states for specific error conditions
+        for state in $container_states $init_container_states; do
+            case "$state" in
+                "waiting")
+                    local reason=$(echo "$pod_json" | jq -r '.status.containerStatuses[]?.state.waiting.reason // .status.initContainerStatuses[]?.state.waiting.reason // empty' | head -1)
+                    if [[ -n "$reason" ]]; then
+                        echo "$reason"
+                        return
+                    fi
+                    ;;
+            esac
+        done
+
+        # Return the phase if no specific container state found
+        echo "$phase"
+    }
+
+    # Function to get the time when pod entered current state
+    get_state_transition_time() {
+        local pod_json=$1
+        local current_state=$2
+
+        case "$current_state" in
+            "Terminating")
+                echo "$pod_json" | jq -r '.metadata.deletionTimestamp // empty'
+                ;;
+            "ContainerCreating"|"PodInitializing"|"Init")
+                # Waiting states usually do not expose a reliable startedAt timestamp.
+                # Use status.startTime first, then fall back to creationTimestamp.
+                local state_time
+                state_time=$(echo "$pod_json" | jq -r '.status.startTime // .metadata.creationTimestamp // empty')
+                echo "$state_time"
+                ;;
+            *)
+                # Match waiting reason across regular and init containers.
+                # waiting states generally lack startedAt, so use pod startTime / creationTimestamp.
+                local waiting_reason
+                waiting_reason=$(echo "$pod_json" | jq -r --arg state "$current_state" '
+                    [
+                      .status.containerStatuses[]?.state.waiting.reason,
+                      .status.initContainerStatuses[]?.state.waiting.reason
+                    ]
+                    | map(select(. != null and . != ""))
+                    | map(select(. == $state))
+                    | first // empty
+                ')
+
+                if [[ -n "$waiting_reason" ]]; then
+                    echo "$pod_json" | jq -r '.status.startTime // .metadata.creationTimestamp // empty'
+                    return
+                fi
+
+                # Fallback for non-waiting states.
+                echo "$pod_json" | jq -r '.status.startTime // .metadata.creationTimestamp // empty'
+                ;;
+        esac
+    }
+
+    get_time_in_state_minutes() {
+        local pod_json=$1
+        local current_state=$2
+
+        local transition_time
+        transition_time=$(get_state_transition_time "$pod_json" "$current_state")
+
+        if [[ -z "$transition_time" || "$transition_time" == "null" ]]; then
+            log "Could not determine transition time for pod state $current_state"
+            return 1
+        fi
+
+        local transition_epoch
+        if ! transition_epoch=$(parse_timestamp_to_epoch "$transition_time"); then
+            log "Could not parse transition time '$transition_time' for pod state $current_state"
+            return 1
+        fi
+
+        local current_epoch
+        current_epoch=$(date +%s)
+
+        echo $(( (current_epoch - transition_epoch) / 60 ))
+    }
+
+    # Function to check if pod has been in state longer than threshold
+    is_pod_stale() {
+        local pod_json=$1
+        local current_state=$2
+        local threshold_minutes=${STATE_TIMEOUTS[$current_state]}
+
+        local diff_minutes
+        if ! diff_minutes=$(get_time_in_state_minutes "$pod_json" "$current_state"); then
+            log "Skipping stale check for state $current_state because time-in-state could not be calculated"
+            return 1
+        fi
+
+        log "State duration for $current_state is ${diff_minutes}m (threshold: ${threshold_minutes}m)"
+
+        if [[ $diff_minutes -ge $threshold_minutes ]]; then
+            return 0
+        fi
+
+        return 1
+    }
+
+    # Function to check if pod is owned by a controller
+    is_controller_owned() {
+        local pod_json=$1
+        local owner_refs=$(echo "$pod_json" | jq -r '.metadata.ownerReferences[]?.kind // empty')
+
+        if [[ -n "$owner_refs" ]]; then
+            return 0  # Pod is owned by a controller
+        fi
+        return 1  # Pod is not owned by a controller
+    }
+
+    # Function to get controller information
+    get_controller_info() {
+        local pod_json=$1
+        echo "$pod_json" | jq -r '.metadata.ownerReferences[]? | "\(.kind)/\(.name)"' | head -1
+    }
+
+    # Function to delete a pod
+    delete_pod() {
+        local pod_name=$1
+        local pod_namespace=$2
+        local pod_state=$3
+        local time_in_state=$4
+        local controller_info=$5
+
+        log "Deleting pod: $pod_namespace/$pod_name (state: $pod_state, duration: ${time_in_state}m, controller: $controller_info)"
+
+        if [[ "$DRY_RUN" == "true" ]]; then
+            log "[DRY RUN] Would delete pod: $pod_namespace/$pod_name"
+            return 0
+        fi
+
+        local -a delete_cmd=(kubectl delete pod "$pod_name" -n "$pod_namespace" --force)
+        if [[ -n "$DELETION_GRACE_PERIOD" ]]; then
+            delete_cmd+=("--grace-period=$DELETION_GRACE_PERIOD")
+        fi
+
+        local delete_output
+        if delete_output=$("${delete_cmd[@]}" 2>&1); then
+            log "Successfully deleted pod: $pod_namespace/$pod_name"
+            log "$delete_output"
+            return 0
+        else
+            log "Failed to delete pod: $pod_namespace/$pod_name"
+            log "$delete_output"
+            return 1
+        fi
+    }
+
+    # Function to get namespaces to process
+    get_target_namespaces() {
+        local namespaces=""
+
+        if [[ -n "$NAMESPACE_SELECTOR" ]]; then
+            # Use specific namespaces
+            namespaces="$NAMESPACE_SELECTOR"
+        else
+            # Get all namespaces
+            namespaces=$(kubectl get namespaces -o jsonpath='{.items[*].metadata.name}' | tr ' ' ',')
+        fi
+
+        # Filter out excluded namespaces
+        if [[ -n "$EXCLUDED_NAMESPACES" ]]; then
+            IFS=',' read -ra EXCLUDED <<< "$EXCLUDED_NAMESPACES"
+            IFS=',' read -ra ALL_NS <<< "$namespaces"
+            local filtered_ns=""
+
+            for ns in "${ALL_NS[@]}"; do
+                local exclude=false
+                for excluded in "${EXCLUDED[@]}"; do
+                    if [[ "$ns" == "$excluded" ]]; then
+                        exclude=true
+                        break
+                    fi
+                done
+                if [[ "$exclude" == "false" ]]; then
+                    if [[ -z "$filtered_ns" ]]; then
+                        filtered_ns="$ns"
+                    else
+                        filtered_ns="$filtered_ns,$ns"
+                    fi
+                fi
+            done
+            namespaces="$filtered_ns"
+        fi
+
+        echo "$namespaces"
+    }
+
+    # Main cleanup logic
+    main() {
+        local pods_cleaned=0
+        local pods_failed=0
+        local pods_skipped=0
+
+        # Parse configuration
+        parse_pod_states_config
+
+        if [[ ${#POD_STATES[@]} -eq 0 ]]; then
+            log "No pod states configured for cleanup"
+            exit 0
+        fi
+
+        # Get target namespaces
+        local target_namespaces=$(get_target_namespaces)
+        IFS=',' read -ra NAMESPACES <<< "$target_namespaces"
+
+        log "Processing ${#NAMESPACES[@]} namespaces: ${target_namespaces}"
+
+        for namespace in "${NAMESPACES[@]}"; do
+            if [[ -z "$namespace" ]]; then
+                continue
+            fi
+
+            log "Processing namespace: $namespace"
+
+            # Build kubectl command for getting pods
+            local -a kubectl_cmd=(kubectl get pods -n "$namespace" -o json)
+            if [[ -n "$POD_SELECTOR" ]]; then
+                kubectl_cmd+=("--selector=$POD_SELECTOR")
+            fi
+
+            # Get pods in namespace
+            local pods_json
+            if ! pods_json=$("${kubectl_cmd[@]}" 2>/dev/null); then
+                log "Failed to get pods in namespace $namespace, skipping"
+                continue
+            fi
+
+            local pod_count=$(echo "$pods_json" | jq '.items | length')
+            log "Found $pod_count pods in namespace $namespace"
+
+            # Process each pod
+            while read -r pod_json; do
+                # Check if we've hit the max pods limit
+                if [[ "$MAX_PODS_PER_RUN" -gt 0 && $pods_cleaned -ge "$MAX_PODS_PER_RUN" ]]; then
+                    log "Reached maximum pods per run limit ($MAX_PODS_PER_RUN), stopping"
+                    break
+                fi
+
+                local pod_name=$(echo "$pod_json" | jq -r '.metadata.name')
+                local pod_namespace=$(echo "$pod_json" | jq -r '.metadata.namespace')
+                local current_state=$(get_pod_state "$pod_json")
+
+                # Check if this state is configured for cleanup
+                if [[ -z "${POD_STATES[$current_state]:-}" ]]; then
+                    continue
+                fi
+
+                log "Checking pod $pod_namespace/$pod_name in state: $current_state"
+
+                # Check if pod is stale
+                if ! is_pod_stale "$pod_json" "$current_state"; then
+                    continue
+                fi
+
+                # Calculate time in current state for logging
+                local time_in_state
+                if ! time_in_state=$(get_time_in_state_minutes "$pod_json" "$current_state"); then
+                    log "Skipping pod $pod_namespace/$pod_name: unable to calculate time in state $current_state"
+                    continue
+                fi
+
+                # Check controller ownership
+                local controller_info="none"
+                if [[ "$CHECK_CONTROLLER_OWNERSHIP" == "true" ]] && is_controller_owned "$pod_json"; then
+                    controller_info=$(get_controller_info "$pod_json")
+
+                    if [[ "$DELETE_CONTROLLER_OWNED_PODS" != "true" ]]; then
+                        log "Skipping controller-owned pod $pod_namespace/$pod_name (controller: $controller_info)"
+                        pods_skipped=$((pods_skipped + 1))
+                        continue
+                    fi
+                fi
+
+                log "Pod $pod_namespace/$pod_name has been in state $current_state for $time_in_state minutes (threshold: ${STATE_TIMEOUTS[$current_state]})"
+
+                # Delete the pod
+                if delete_pod "$pod_name" "$pod_namespace" "$current_state" "$time_in_state" "$controller_info"; then
+                    pods_cleaned=$((pods_cleaned + 1))
+                else
+                    pods_failed=$((pods_failed + 1))
+                fi
+            done < <(echo "$pods_json" | jq -c '.items[]')
+        done
+
+        log "Cleanup completed. Pods cleaned: $pods_cleaned, Pods failed: $pods_failed, Pods skipped: $pods_skipped"
+
+        # Exit with error if any pods failed to clean up
+        if [[ $pods_failed -gt 0 ]]; then
+            exit 1
+        fi
+    }
+
+    # Run main function
+    main
+---
+# pod-cleanup-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pod-cleanup
+  namespace: kube-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: pod-cleanup
+  template:
+    metadata:
+      labels:
+        app: pod-cleanup
+    spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: x-eks.amazonaws.com/managed-node
+                operator: In
+                values:
+                - "true"
+      serviceAccountName: pod-cleanup-sa
+      restartPolicy: Always
+      containers:
+      - name: pod-cleanup
+        image: ghcr.io/rcmorano/bjck:sha-0a317ae
+        env:
+        - name: DRY_RUN
+          valueFrom:
+            configMapKeyRef:
+              name: pod-cleanup-config
+              key: dry_run
+        - name: POD_STATES_CONFIG
+          valueFrom:
+            configMapKeyRef:
+              name: pod-cleanup-config
+              key: pod_states_config
+        - name: NAMESPACE_SELECTOR
+          valueFrom:
+            configMapKeyRef:
+              name: pod-cleanup-config
+              key: namespace_selector
+        - name: EXCLUDED_NAMESPACES
+          valueFrom:
+            configMapKeyRef:
+              name: pod-cleanup-config
+              key: excluded_namespaces
+        - name: POD_SELECTOR
+          valueFrom:
+            configMapKeyRef:
+              name: pod-cleanup-config
+              key: pod_selector
+        - name: DELETION_GRACE_PERIOD
+          valueFrom:
+            configMapKeyRef:
+              name: pod-cleanup-config
+              key: deletion_grace_period
+        - name: CHECK_CONTROLLER_OWNERSHIP
+          valueFrom:
+            configMapKeyRef:
+              name: pod-cleanup-config
+              key: check_controller_ownership
+        - name: DELETE_CONTROLLER_OWNED_PODS
+          valueFrom:
+            configMapKeyRef:
+              name: pod-cleanup-config
+              key: delete_controller_owned_pods
+        - name: MAX_PODS_PER_RUN
+          valueFrom:
+            configMapKeyRef:
+              name: pod-cleanup-config
+              key: max_pods_per_run
+        - name: LOOP_INTERVAL_SECONDS
+          valueFrom:
+            configMapKeyRef:
+              name: pod-cleanup-config
+              key: loop_interval_seconds
+        command:
+        - /bin/bash
+        - -c
+        - |
+          set -euo pipefail
+          while true; do
+            echo "Starting cleanup iteration at $(date)"
+            /bin/bash /scripts/cleanup.sh
+            echo "Cleanup iteration finished at $(date)"
+            sleep "${LOOP_INTERVAL_SECONDS:-120}"
+          done
+        volumeMounts:
+        - name: cleanup-script
+          mountPath: /scripts
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "256Mi"
+            cpu: "200m"
+      volumes:
+      - name: cleanup-script
+        configMap:
+          name: pod-cleanup-script
+          defaultMode: 0755

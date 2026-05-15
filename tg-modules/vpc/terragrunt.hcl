@@ -78,6 +78,102 @@ EOF
 }
 
 
+generate "dynamic-vpc-peering" {
+  path      = "dynamic-vpc-peering.tf"
+  if_exists = "overwrite"
+  contents  = <<EOF
+
+%{ for vpc_region_k, vpc_region_v in try(local.config.network.vpc.regions, { } ) ~}
+  %{ for vpc_name, vpc_values in vpc_region_v ~}
+    %{ if try(vpc_values.peering, "") != "" }
+      %{ for peering_name, peering_values in vpc_values.peering ~}
+
+# Add the aws_vpc_peering_connection_accepter resource in the peer VPC's region if the peer VPC is in a different region
+        %{ if peering_values.peer-region != "" && peering_values.peer-region != vpc_region_k }
+resource "aws_vpc_peering_connection_accepter" "peering_accepter_${peering_values.peer-region}-${peering_values.peer-vpc}_from_${vpc_region_k}-${vpc_name}" {
+  provider = aws.${peering_values.peer-region}
+
+  vpc_peering_connection_id = aws_vpc_peering_connection.peering_${vpc_region_k}-${vpc_name}_to_${peering_values.peer-region}-${peering_values.peer-vpc}.id
+  auto_accept              = true
+
+  tags = {
+    Name = "${local.config.general.env-short}-peering-${peering_values.peer-vpc}-to-${vpc_name}"
+    Side = "Accepter"
+  }
+}
+        %{ endif ~}
+
+# VPC Peering from ${vpc_name} to ${peering_values.peer-vpc}
+resource "aws_vpc_peering_connection" "peering_${vpc_region_k}-${vpc_name}_to_${peering_values.peer-region}-${peering_values.peer-vpc}" {
+  provider = aws.${vpc_region_k}
+  
+  vpc_id        = module.vpc_${vpc_region_k}_${vpc_name}.vpc_id
+  peer_vpc_id   = module.vpc_${peering_values.peer-region}_${peering_values.peer-vpc}.vpc_id
+  peer_region   = ${peering_values.peer-region != "" ? "\"${peering_values.peer-region}\"" : "aws.${vpc_region_k}.region" }
+  auto_accept   = false
+
+  tags = {
+    Name = "${local.config.general.env-short}-peering-${vpc_name}-to-${peering_values.peer-vpc}"
+    Side = "Requester"
+  }
+}
+
+# Add routes from ${vpc_name} subnets to ${peering_values.peer-vpc}
+        %{ for sn_name, sn_values in vpc_values.subnets ~}
+          %{ if sn_values.private_subnets_enabled }
+resource "aws_route" "peering_route_${vpc_region_k}-${vpc_name}-${sn_name}_private_to_${peering_values.peer-region}-${peering_values.peer-vpc}" {
+  provider = aws.${vpc_region_k}
+  
+  count = length(module.subnet_${vpc_region_k}_${vpc_name}_${sn_name}.private_route_table_ids)
+  
+  route_table_id            = module.subnet_${vpc_region_k}_${vpc_name}_${sn_name}.private_route_table_ids[count.index]
+  destination_cidr_block    = module.vpc_${peering_values.peer-region}_${peering_values.peer-vpc}.vpc_cidr_block
+  vpc_peering_connection_id = aws_vpc_peering_connection.peering_${vpc_region_k}-${vpc_name}_to_${peering_values.peer-region}-${peering_values.peer-vpc}.id
+}
+          %{ endif ~}
+          %{ if sn_values.public_subnets_enabled }
+resource "aws_route" "peering_route_${vpc_region_k}-${vpc_name}-${sn_name}_public_to_${peering_values.peer-region}-${peering_values.peer-vpc}" {
+  provider = aws.${vpc_region_k}
+  
+  count = length(module.subnet_${vpc_region_k}_${vpc_name}_${sn_name}.public_route_table_ids)
+  
+  route_table_id            = module.subnet_${vpc_region_k}_${vpc_name}_${sn_name}.public_route_table_ids[count.index]
+  destination_cidr_block    = module.vpc_${peering_values.peer-region}_${peering_values.peer-vpc}.vpc_cidr_block
+  vpc_peering_connection_id = aws_vpc_peering_connection.peering_${vpc_region_k}-${vpc_name}_to_${peering_values.peer-region}-${peering_values.peer-vpc}.id
+}
+          %{ endif ~}
+        %{ endfor ~}
+
+# Add routes from ${peering_values.peer-vpc} subnets to ${vpc_name}
+        %{ for peer_sn_name, peer_sn_values in try(local.config.network.vpc.regions[peering_values.peer-region][peering_values.peer-vpc].subnets, { } ) ~}
+          %{ if peer_sn_values.private_subnets_enabled }
+resource "aws_route" "peering_route_${peering_values.peer-region}-${peering_values.peer-vpc}-${peer_sn_name}_private_to_${vpc_region_k}-${vpc_name}" {
+  provider = aws.${peering_values.peer-region}
+  count = length(module.subnet_${peering_values.peer-region}_${peering_values.peer-vpc}_${peer_sn_name}.private_route_table_ids)
+  route_table_id            = module.subnet_${peering_values.peer-region}_${peering_values.peer-vpc}_${peer_sn_name}.private_route_table_ids[count.index]
+  destination_cidr_block    = module.vpc_${vpc_region_k}_${vpc_name}.vpc_cidr_block
+  vpc_peering_connection_id = aws_vpc_peering_connection.peering_${vpc_region_k}-${vpc_name}_to_${peering_values.peer-region}-${peering_values.peer-vpc}.id
+}
+          %{ endif ~}
+          %{ if peer_sn_values.public_subnets_enabled }
+resource "aws_route" "peering_route_${peering_values.peer-region}-${peering_values.peer-vpc}-${peer_sn_name}_public_to_${vpc_region_k}-${vpc_name}" {
+  provider = aws.${peering_values.peer-region}
+  count = length(module.subnet_${peering_values.peer-region}_${peering_values.peer-vpc}_${peer_sn_name}.public_route_table_ids)
+  route_table_id            = module.subnet_${peering_values.peer-region}_${peering_values.peer-vpc}_${peer_sn_name}.public_route_table_ids[count.index]
+  destination_cidr_block    = module.vpc_${vpc_region_k}_${vpc_name}.vpc_cidr_block
+  vpc_peering_connection_id = aws_vpc_peering_connection.peering_${vpc_region_k}-${vpc_name}_to_${peering_values.peer-region}-${peering_values.peer-vpc}.id
+}
+          %{ endif ~}
+        %{ endfor ~}
+
+      %{ endfor ~}
+    %{ endif ~}
+  %{ endfor ~}
+%{ endfor ~}
+
+EOF
+}
+
 generate "dynamic-outputs" {
   path      = "dynamic-vpc-outputs.tf"
   if_exists = "overwrite"
@@ -105,6 +201,25 @@ output vpcs {
 
 %{ endfor ~}
    )
+}
+
+output vpc_peering_connections {
+  value = merge(
+%{ for vpc_region_k, vpc_region_v in try(local.config.network.vpc.regions, { } ) ~}
+  %{ for vpc_name, vpc_values in vpc_region_v ~}
+    %{ if try(vpc_values.peering, "") != "" }
+      %{ for peering_name, peering_values in vpc_values.peering ~}
+    {
+      "peering_${vpc_region_k}_${vpc_name}_to_${peering_values.peer-vpc}" = {
+        id = aws_vpc_peering_connection.peering_${vpc_region_k}-${vpc_name}_to_${peering_values.peer-region}-${peering_values.peer-vpc}.id
+        status = aws_vpc_peering_connection.peering_${vpc_region_k}-${vpc_name}_to_${peering_values.peer-region}-${peering_values.peer-vpc}.accept_status
+      }
+    },
+      %{ endfor ~}
+    %{ endif ~}
+  %{ endfor ~}
+%{ endfor ~}
+  )
 }
 
 EOF
