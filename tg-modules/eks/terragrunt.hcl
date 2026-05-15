@@ -384,8 +384,8 @@ module "eks_node_group_${eks_region_k}_${eks_name}_${eng_name}" {
 resource "aws_ssm_association" "bootstrap_${eks_region_k}_${eks_name}_${eng_name}" {
   name = "AWS-RunShellScript"
   targets {
-    key    = "tag:eks:nodegroup-name"
-    values = [split(":", module.eks_node_group_${eks_region_k}_${eks_name}_${eng_name}.eks_node_group_id)[1]]
+    key    = "tag:Name"
+    values = [module.eks_node_group_${eks_region_k}_${eks_name}_${eng_name}.eks_node_group_role_name]
   }
   parameters = {
     commands = <<-EOC
@@ -406,8 +406,8 @@ resource "aws_ssm_association" "set_max_pods_${eks_region_k}_${eks_name}_${eng_n
   name = "AWS-RunShellScript"
 
   targets {
-    key    = "tag:eks:nodegroup-name"
-    values = [split(":", module.eks_node_group_${eks_region_k}_${eks_name}_${eng_name}.eks_node_group_id)[1]]
+    key    = "tag:Name"
+    values = [module.eks_node_group_${eks_region_k}_${eks_name}_${eng_name}.eks_node_group_role_name]
   }
 
   parameters = {
@@ -433,8 +433,8 @@ EOC
 resource "aws_ssm_association" "disable_swap_${eks_region_k}_${eks_name}_${eng_name}" {
   name = "AWS-RunShellScript"
   targets {
-    key    = "tag:eks:nodegroup-name"
-    values = [split(":", module.eks_node_group_${eks_region_k}_${eks_name}_${eng_name}.eks_node_group_id)[1]]
+    key    = "tag:Name"
+    values = [module.eks_node_group_${eks_region_k}_${eks_name}_${eng_name}.eks_node_group_role_name]
   }
   parameters = {
     commands = <<-EOC
@@ -463,8 +463,8 @@ resource "aws_ssm_association" "enable_swap_${eks_region_k}_${eks_name}_${eng_na
   name = "AWS-RunShellScript"
 
   targets {
-    key    = "tag:eks:nodegroup-name"
-    values = [split(":", module.eks_node_group_${eks_region_k}_${eks_name}_${eng_name}.eks_node_group_id)[1]]
+    key    = "tag:Name"
+    values = [module.eks_node_group_${eks_region_k}_${eks_name}_${eng_name}.eks_node_group_role_name]
   }
 
   parameters = {
@@ -549,18 +549,20 @@ resource "null_resource" "${eks_region_k}_${eks_name}_delete_daemonsets" {
 
 data "template_file" "${eks_region_k}_${eks_name}_cilium" {
   template = <<EOT
-nodeSelector:
-  x-eks.amazonaws.com/managed-node: "true"
 k8sServiceHost: $${replace(module.eks_cluster_${eks_region_k}_${eks_name}.eks_cluster_endpoint, "https://", "")}
 k8sServicePort: 443
+nodeSelector:
+  x-eks.amazonaws.com/managed-node: "true"
+mtu: 8951
+devices: "ens+"
+ipv4NativeRoutingCIDR: 10.128.0.0/9
 bpf:
   hostLegacyRouting: true
   hostRoutingMTU: 8951
-#  masquerade: true
-#extraArgs:
-#  - --enable-ipv4-masquerade=true
-ipv4NativeRoutingCIDR: 10.128.0.0/9
-mtu: 8951
+  masquerade: true
+#  hostRoutingMTU: 9001
+extraArgs:
+  - --enable-ipv4-masquerade=true
 eni:
   enabled: true
   updateEC2AdapterLimitViaAPI: false
@@ -581,6 +583,7 @@ ipam:
 k8s:
  requireIPv4PodCIDR: false
 routingMode: native
+autoDirectNodeRoutes: true
 endpointRoutes:
   enabled: true
 nodePort:
@@ -594,10 +597,10 @@ operator:
     repository: cilium/operator
     # replace suffix -[0-9] from the cni version as docker images dont have them
     tag: "$${replace("v${ chomp(try("${eks_values.network.cni.version}", "1.19.3")) }", "/-[0-9]+$/", "")}"
-  unmanagedPodWatcher:
-    restart: false
   nodeSelector:
     x-eks.amazonaws.com/managed-node: "true"
+  unmanagedPodWatcher:
+    restart: false
 loadBalancer:
   serviceTopology: true
 kubeProxyReplacement: true
@@ -818,7 +821,7 @@ resource "aws_ssm_activation" "eks_hybrid_node_activation_${eks_region_k}_${eks_
   tags = { 
     "autoscaling:groupName" = module.hybrid_node_asg_${eks_region_k}_${eks_name}_${hng_name}.autoscaling_group_name,
     "eks:cluster-name" = module.eks_cluster_${eks_region_k}_${eks_name}.eks_cluster_id,
-    "eks:nodegroup-name" = "${hng_name}"
+    "eks:nodegroup-name" = "$${local.env_short}-${eks_name}-hybrid-${hng_name}-${hng_values.network.region}"
   }
 
 }
@@ -1258,6 +1261,7 @@ resource "aws_ssm_association" "hybrid_node_enable_swap_${eks_region_k}_${eks_na
       sysctl -p /etc/sysctl.d/99-kubernetes-swap.conf
  
       # Setting LimitedSwap allows pods to burst memory usage into swap
+      mkdir -p $(dirname $KUBELET_CONFIG_FILE)
       cat <<EOCAT > $KUBELET_CONFIG_FILE
       {
           "apiVersion": "kubelet.config.k8s.io/v1beta1",
@@ -1268,7 +1272,7 @@ resource "aws_ssm_association" "hybrid_node_enable_swap_${eks_region_k}_${eks_na
       EOCAT
 
       systemctl daemon-reload
-      systemctl restart kubelet
+      systemctl restart kubelet || true
     EOC
   }
   
