@@ -31,8 +31,8 @@ dependency "eks-alb" {
 
 inputs = {
 
-  eks_alb_json = dependency.eks-alb.outputs.eks_albs
-  eks_hybrid_alb_json = dependency.eks-alb.outputs.eks_hybrid_albs
+  eks_alb_json = try(dependency.eks-alb.outputs.eks_albs, {})
+  eks_hybrid_alb_json = try(dependency.eks-alb.outputs.eks_hybrid_albs, {})
   unique_eks_names = local.unique_eks_names
 
 }

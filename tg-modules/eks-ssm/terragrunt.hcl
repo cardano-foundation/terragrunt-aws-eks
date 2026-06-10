@@ -40,10 +40,10 @@ dependency "kms" {
 
 inputs = {
 
-  eks_clusters_json = dependency.eks.outputs.eks_clusters
-  eks_node_groups_json = dependency.eks.outputs.eks_node_groups
-  kms_regional_json = dependency.kms.outputs.kms_regional 
-  kms_multi_region_key_arn = dependency.kms.outputs.kms_multi_region_key_arn
+  eks_clusters_json = try(dependency.eks.outputs.eks_clusters, {})
+  eks_node_groups_json = try(dependency.eks.outputs.eks_node_groups, {})
+  kms_regional_json = try(dependency.kms.outputs.kms_regional, {})
+  kms_multi_region_key_arn = try(dependency.kms.outputs.kms_multi_region_key_arn, "Known after apply (this is a mocked input from terragrunt)")
 
 }
 

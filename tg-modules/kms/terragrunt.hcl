@@ -28,8 +28,8 @@ dependency "eks" {
 
 inputs = {
 
-  eks_clusters_json = dependency.eks.outputs.eks_clusters
-  eks_node_groups_json = dependency.eks.outputs.eks_node_groups
+  eks_clusters_json = try(dependency.eks.outputs.eks_clusters, {})
+  eks_node_groups_json = try(dependency.eks.outputs.eks_node_groups, {})
 
 }
 

@@ -48,7 +48,7 @@ EOF
 
 inputs = {
 
-  vpcs_json = dependency.vpc.outputs.vpcs
+  vpcs_json = try(dependency.vpc.outputs.vpcs, {})
 
 }
 
