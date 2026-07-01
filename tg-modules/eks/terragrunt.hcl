@@ -575,7 +575,7 @@ nodeinit:
 ipam:
   mode: eni
   operator:
-    clusterPoolIPv4PodCIDRList: [$${module.eks_cluster_eu-west-1_cf-idw.eks_cluster_ipv4_service_cidr}]
+    clusterPoolIPv4PodCIDRList: [$${module.eks_cluster_${eks_region_k}_${eks_name}.eks_cluster_ipv4_service_cidr}]
   ciliumNodeUpdateRate: 5s
   nodeSpec:
     ipamMinAllocate: 96
@@ -734,7 +734,8 @@ module "eks_hybrid_node_role_${eks_region_k}_${eks_name}_${hng_name}" {
   source = "terraform-aws-modules/eks/aws//modules/hybrid-node-role"
   version = "${ chomp(try(local.config.eks.hybrid-node-role-module-version, "21.19.0")) }"
 
-  name = "$${local.env_short}-hnr-${eks_region_k}-${eks_name}-${hng_name}"
+  # truncate this to 38 characters to avoid IAM role name length limit
+  name = substr("$${local.env_short}-hnr-${eks_region_k}-${eks_name}-${hng_name}", 0, 37)
 
   policies = {
     AmazonEKSWorkerNodePolicy = "arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy"
@@ -1066,7 +1067,7 @@ nodeinit:
 ipam:
   mode: eni
   operator:
-    clusterPoolIPv4PodCIDRList: [$${module.eks_cluster_eu-west-1_cf-idw.eks_cluster_ipv4_service_cidr}]
+    clusterPoolIPv4PodCIDRList: [$${module.eks_cluster_${eks_region_k}_${eks_name}.eks_cluster_ipv4_service_cidr}]
   ciliumNodeUpdateRate: 5s
   nodeSpec:
     ipamMinAllocate: 96

@@ -230,6 +230,7 @@ EOT
 
 resource "helm_release" "${eks_region_k}_${eks_name}_${chart_k}" {
   provider   = helm.${eks_region_k}_${eks_name}
+  timeout    = 600
   %{ if try("${chart_v.repository}", "") != "" }
   repository = "${chart_v.repository}"
   %{ endif ~}
