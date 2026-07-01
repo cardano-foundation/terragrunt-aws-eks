@@ -115,3 +115,16 @@ aws eks update-kubeconfig \
 ```
 
 kubectl get csr | grep Pending | awk '{print $1}' | xargs kubectl certificate approve
+
+## Debug terragrunt-generated terraform code
+
+Our `tg-modules` generate json outputs that are used as a whole as input tfvars in other modules. In order to debug plain terraform with these from the `.terragrunt-cache` dirs, you would need to:
+* Export the terragrunt-generated outputs by using `--terragrunt-debug`. This will generate a `terragrunt-debug.tfvars.json` files in your `tg-modules` folder.
+* Reshape the json tfvar as a string and place it in the cache folder, ie:
+```
+jq '.vpcs_json |= tojson' terragrunt-debug.tfvars.json > .terragrunt-cache/zWLSUs9P9PHDvgV5A9N6WvCp_Ic/6G09Q76-iv09phnFAt5bkcc6DlY/terraform.tfvars.json
+```
+* Get into the corresponding `.terragrunt-cache` folder and run `terraform` as usual (it will automatically pick up `terraform.tfvars.json`:
+```
+terraform plan
+```
