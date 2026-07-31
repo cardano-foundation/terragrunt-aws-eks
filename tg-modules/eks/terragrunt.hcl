@@ -380,6 +380,34 @@ module "eks_node_group_${eks_region_k}_${eks_name}_${eng_name}" {
 
 }
 
+# policy allowing "ec2:DescribeRouteTables" for the node group to allow cilium to setup routing tables for pods. limited to ec2 instances from the node group role
+resource "aws_iam_policy" "aws_describe_route_tables_policy_${eks_region_k}_${eks_name}_${eng_name}" {
+  name        = "$${local.env_short}-${eks_name}-${eng_name}-describe-route-tables-policy"
+  description = "Policy allowing ec2:DescribeRouteTables for the node group to allow cilium to setup routing tables for pods. limited to ec2 instances from the node group role"
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect   = "Allow"
+        Action   = ["ec2:DescribeRouteTables"]
+        Resource = "*"
+        Condition = {
+          StringEquals = {
+            "ec2:Vpc" = jsondecode(var.vpcs_json).vpc_${eks_region_k}_${eks_values.network.vpc}.vpc_info.vpc_id
+          }
+        }
+      }
+    ]
+  })
+}
+
+# attach a policy to the node group that allows "ec2:DescribeRouteTables"
+resource "aws_iam_role_policy_attachment" "node_group_describe_route_tables_policy_${eks_region_k}_${eks_name}_${eng_name}" {
+  policy_arn = aws_iam_policy.aws_describe_route_tables_policy_${eks_region_k}_${eks_name}_${eng_name}.arn
+  role       = module.eks_node_group_${eks_region_k}_${eks_name}_${eng_name}.eks_node_group_role_name
+}
+
 # add a bootstrap ssm script execution to setup any extra dependency as efs-utils
 resource "aws_ssm_association" "bootstrap_${eks_region_k}_${eks_name}_${eng_name}" {
   name = "AWS-RunShellScript"
@@ -584,6 +612,8 @@ k8s:
  requireIPv4PodCIDR: false
 routingMode: native
 autoDirectNodeRoutes: true
+ciliumEndpointSlice:
+  enabled: true
 endpointRoutes:
   enabled: true
 nodePort:
