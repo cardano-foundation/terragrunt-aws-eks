@@ -11,7 +11,7 @@ data:
   # Pod states to monitor and their timeout in minutes
   # Format: "state1:timeout1,state2:timeout2,..."
   #pod_states_config: "Terminating:10,ContainerCreating:15,ImagePullBackOff:20,ErrImagePull:10,CrashLoopBackOff:30,CreateContainerConfigError:5,InvalidImageName:5,CreateContainerError:10"
-  pod_states_config: "Terminating:1,ContainerCreating:3,Init:5"
+  pod_states_config: "Terminating:1,ContainerCreating:3,Init:3,PodInitializing:3,Pending:3"
 
   # Namespace selector (empty means all namespaces, comma-separated list for specific namespaces)
   namespace_selector: ""
