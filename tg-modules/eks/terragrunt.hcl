@@ -301,6 +301,8 @@ module "eks_node_group_${eks_region_k}_${eks_name}_${eng_name}" {
   context = module.node_group_label_${eks_region_k}_${eks_name}_${eng_name}.context
   name = substr("$${local.env_short}-${eks_name}-${eng_name}-${eks_region_k}", 0, 40)
 
+  kubernetes_version = [ "${ chomp(try(eng_values.k8s-version, eks_values.k8s-version))}" ]
+
   instance_types = [%{ for type in eng_values.instance-types ~} "${type}", %{ endfor ~}]
   ami_type       = "${ chomp(try("${eng_values.ami-type}", "AL2_x86_64")) }"
   node_repair_enabled = ${ chomp(try("${eng_values.node-repair-enabled}", false) ) }
