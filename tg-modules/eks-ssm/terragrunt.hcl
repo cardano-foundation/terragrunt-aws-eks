@@ -153,7 +153,7 @@ provider "kubernetes" {
 data "template_file" "${eks_region_k}_${eks_name}_secrets_store" {
 
   template = <<EOT
-apiVersion: external-secrets.io/v1beta1
+apiVersion: external-secrets.io/v1
 kind: SecretStore
 metadata:
   name: ${eks_region_k}-${eks_name}
@@ -179,7 +179,7 @@ EOT
 data "template_file" "${eks_region_k}_${eks_name}_external_secrets" {
 
   template = <<EOT
-apiVersion: external-secrets.io/v1beta1
+apiVersion: external-secrets.io/v1
 kind: ExternalSecret
 metadata:
   name: $${local.project}-secrets
