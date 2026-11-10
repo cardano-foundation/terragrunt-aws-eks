@@ -23,6 +23,28 @@ These hybrid node groups are EC2 instances managed by autoscaling groups that:
 - Can receive optional SSM-based post-bootstrap configuration such as swap configuration
 - Can be exposed to the cluster autoscaler through the expected ASG tags
 
+## CNI Selection (`network.cni.mode`)
+
+Per cluster, for node groups inside the cluster VPC:
+
+| mode | CNI on those nodes | module emits |
+|---|---|---|
+| `amazon-vpc-cni` (default) | amazon-vpc-cni + kube-proxy | nothing CNI-related |
+| `cilium` | Cilium replaces both | Cilium Helm release, the DaemonSet-deleting `null_resource`, `aws_iam_policy.aws_describe_route_tables_policy_*` |
+
+AWS supports only the first on cloud nodes — "Cilium is not supported by AWS when running on nodes in
+AWS Cloud" ([Configure CNI for hybrid nodes](https://docs.aws.amazon.com/eks/latest/userguide/hybrid-nodes-cni.html))
+— where Cilium runs *only on hybrid nodes* with `ipam.mode: cluster-pool` + overlay + advertised Pod
+CIDR. `remote_network_config` is acted on by amazon-vpc-cni, so it requires `amazon-vpc-cni`.
+
+Three gaps in the hybrid path, fix before enabling hybrid node groups:
+- the per-group Cilium release inherits `eni.enabled` / `ipam.mode: eni` (Pod IPs from the hybrid VPC's
+  subnets) instead of AWS's cluster-pool + overlay.
+- the launch template sets `eks.amazonaws.com/compute-type` twice (`hybrid` and `hybrid-ec2`), so either
+  VPC CNI's anti-affinity or AWS's documented Cilium affinity is lost.
+- VPC peering is not a documented hybrid transport (AWS lists Site-to-Site VPN / Direct Connect via
+  VGW/TGW; guidance: >=100 Mbps, <=200 ms RTT).
+
 ## Architecture
 
 ```text
