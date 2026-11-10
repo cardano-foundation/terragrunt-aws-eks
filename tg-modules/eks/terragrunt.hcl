@@ -244,7 +244,7 @@ module "node_group_label_${eks_region_k}_${eks_name}_${eng_name}" {
 
   stage      = ""
   namespace  = ""
-  name       = substr("$${local.env_short}-${eks_name}-${eng_name}-${eks_region_k}", 0, 40)
+  name       = "$${local.env_short}-${eks_name}-${eng_name}-${eks_region_k}"
   delimiter  = "-"
   tags = {
     "Environment" = "$${local.environment}",
@@ -263,7 +263,7 @@ module "eks_node_group_sg_${eks_region_k}_${eks_name}_${eng_name}" {
   source = "cloudposse/security-group/aws"
   version = "2.0.1"
   context = module.node_group_label_${eks_region_k}_${eks_name}_${eng_name}.context
-  name = substr("$${local.env_short}-${eks_name}-${eng_name}-${eks_region_k}", 0, 40)
+  name = "$${local.env_short}-${eks_name}-${eng_name}-${eks_region_k}"
 
   vpc_id     = jsondecode(var.vpcs_json).vpc_${eks_region_k}_${eks_values.network.vpc}.vpc_info.vpc_id
 
@@ -310,8 +310,8 @@ module "eks_node_group_${eks_region_k}_${eks_name}_${eng_name}" {
   %{ if try(regex("git::", local.config.eks.node-group-module-source), "") != "git::" }
   version = "${ chomp(try(local.config.eks.node-group-module-version, "3.1.1")) }"
   %{ endif ~}
-  context = module.node_group_label_${eks_region_k}_${eks_name}_${eng_name}.context
-  name = substr("$${local.env_short}-${eks_name}-${eng_name}-${eks_region_k}", 0, 40)
+  name = "$${local.env_short}-${eks_name}-${eng_name}-${eks_region_k}"
+  context = merge(module.node_group_label_${eks_region_k}_${eks_name}_${eng_name}.context, { id_length_limit = 64 })
 
   kubernetes_version = [ "${ chomp(try(eng_values.k8s-version, eks_values.k8s-version))}" ]
 
