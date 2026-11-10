@@ -246,6 +246,10 @@ module "node_group_label_${eks_region_k}_${eks_name}_${eng_name}" {
   namespace  = ""
   name       = substr("$${local.env_short}-${eks_name}-${eng_name}-${eks_region_k}", 0, 40)
   delimiter  = "-"
+  tags = {
+    "Environment" = "$${local.environment}",
+    "Project" = "$${local.project}"
+  }
 }
 
       %{ if try(eng_values.exposed-ports, "") != "" } 
