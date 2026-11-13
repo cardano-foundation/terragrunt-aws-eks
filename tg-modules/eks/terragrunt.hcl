@@ -171,13 +171,17 @@ moved {
 }
 
 resource "aws_eks_addon" "addon_${eks_region_k}_${eks_name}_${addon_name}" {
+  # root-level resource: without an explicit provider it uses the default aws provider,
+  # whose region is not the cluster region -> "No cluster found for name: ..."
+  provider = aws.${eks_region_k}
+
   cluster_name = module.eks_cluster_${eks_region_k}_${eks_name}.eks_cluster_id
   addon_name   = "${addon_name}"
   addon_version = "${addon_v.addon-version}"
   %{ if try(addon_v.resolve-conflicts, "") != "" }
   resolve_conflicts_on_create = "${addon_v.resolve-conflicts}"
   %{ else }
-  %resolve_conflicts_on_create = "PRESERVE"
+  resolve_conflicts_on_create = "PRESERVE"
   %{ endif ~}
   %{ if try(addon_v.resolve-conflicts, "") != "" }
   resolve_conflicts_on_update = "${addon_v.resolve-conflicts}"
