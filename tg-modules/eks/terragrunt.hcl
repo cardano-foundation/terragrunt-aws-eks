@@ -101,7 +101,11 @@ module "eks_cluster_${eks_region_k}_${eks_name}" {
 
   region     = "${eks_region_k}"
 
-  service_ipv4_cidr = "${ chomp(try("${eks_values.network.service-ipv4-cidr}", "172.16.0.0/16") ) }"
+  # immutable after cluster creation (ForceNew): emit only when configured, and it must then equal
+  # the live serviceIpv4Cidr or terraform replaces the cluster. Unset = pre-#11 behaviour (no diff).
+  %{ if try("${eks_values.network.service-ipv4-cidr}", "") != "" ~}
+  service_ipv4_cidr = "${ chomp(try("${eks_values.network.service-ipv4-cidr}", "")) }"
+  %{ endif ~}
 
   subnet_ids = concat(
   %{ for subnet in try(eks_values.network.subnets, []) ~}
@@ -159,6 +163,13 @@ module "eks_cluster_${eks_region_k}_${eks_name}" {
 
     %{ if try(eks_values.addons, "") != "" }
       %{ for addon_name, addon_v in eks_values.addons ~}
+# addons moved from the cluster module to root resources; without this terraform destroys and
+# recreates them, and delete-addon has no --preserve, so the add-on software is removed from the cluster.
+moved {
+  from = module.eks_cluster_${eks_region_k}_${eks_name}.aws_eks_addon.cluster["${addon_name}"]
+  to   = aws_eks_addon.addon_${eks_region_k}_${eks_name}_${addon_name}
+}
+
 resource "aws_eks_addon" "addon_${eks_region_k}_${eks_name}_${addon_name}" {
   cluster_name = module.eks_cluster_${eks_region_k}_${eks_name}.eks_cluster_id
   addon_name   = "${addon_name}"
@@ -188,9 +199,6 @@ resource "aws_eks_addon" "addon_${eks_region_k}_${eks_name}_${addon_name}" {
     }
   })
   %{ endif ~}
-
-  # depend on cilium setup
-  depends_on = [helm_release.${eks_region_k}_${eks_name}_cilium]
 }
 
       %{ endfor ~}
@@ -236,8 +244,12 @@ module "node_group_label_${eks_region_k}_${eks_name}_${eng_name}" {
 
   stage      = ""
   namespace  = ""
-  name       = substr("$${local.env_short}-${eks_name}-${eng_name}-${eks_region_k}", 0, 40)
+  name       = "$${local.env_short}-${eks_name}-${eng_name}-${eks_region_k}"
   delimiter  = "-"
+  tags = {
+    "Environment" = "$${local.environment}",
+    "Project" = "$${local.project}"
+  }
 }
 
       %{ if try(eng_values.exposed-ports, "") != "" } 
@@ -251,7 +263,7 @@ module "eks_node_group_sg_${eks_region_k}_${eks_name}_${eng_name}" {
   source = "cloudposse/security-group/aws"
   version = "2.0.1"
   context = module.node_group_label_${eks_region_k}_${eks_name}_${eng_name}.context
-  name = substr("$${local.env_short}-${eks_name}-${eng_name}-${eks_region_k}", 0, 40)
+  name = "$${local.env_short}-${eks_name}-${eng_name}-${eks_region_k}"
 
   vpc_id     = jsondecode(var.vpcs_json).vpc_${eks_region_k}_${eks_values.network.vpc}.vpc_info.vpc_id
 
@@ -287,8 +299,8 @@ module "eks_node_group_sg_${eks_region_k}_${eks_name}_${eng_name}" {
 
 module "eks_node_group_${eks_region_k}_${eks_name}_${eng_name}" {
 
-  # depend on cilium setup
-  depends_on = [helm_release.${eks_region_k}_${eks_name}_cilium]
+  # no depends_on on the cilium release: it defers this module's data sources to apply time, making
+  # the launch template unknown -> new random_pet.cbd keeper -> node group REPLACED.
 
   providers = {
     aws = aws.${eks_region_k}
@@ -298,8 +310,8 @@ module "eks_node_group_${eks_region_k}_${eks_name}_${eng_name}" {
   %{ if try(regex("git::", local.config.eks.node-group-module-source), "") != "git::" }
   version = "${ chomp(try(local.config.eks.node-group-module-version, "3.1.1")) }"
   %{ endif ~}
-  context = module.node_group_label_${eks_region_k}_${eks_name}_${eng_name}.context
-  name = substr("$${local.env_short}-${eks_name}-${eng_name}-${eks_region_k}", 0, 40)
+  name = "$${local.env_short}-${eks_name}-${eng_name}-${eks_region_k}"
+  context = merge(module.node_group_label_${eks_region_k}_${eks_name}_${eng_name}.context, { id_length_limit = 64 })
 
   kubernetes_version = [ "${ chomp(try(eng_values.k8s-version, eks_values.k8s-version))}" ]
 
@@ -382,6 +394,13 @@ module "eks_node_group_${eks_region_k}_${eks_name}_${eng_name}" {
 
 }
 
+# ========================================
+# CNI for nodes inside the cluster VPC: network.cni.mode = "amazon-vpc-cni" (default, AWS-supported,
+# and the only one that makes remote_network_config work) | "cilium" (replaces aws-node + kube-proxy,
+# not AWS-supported on cloud nodes; see HYBRID_NODES.md). Everything gated below is Cilium-only.
+# ========================================
+
+%{~ if chomp(try("${eks_values.network.cni.mode}", "amazon-vpc-cni")) == "cilium" ~}
 # policy allowing "ec2:DescribeRouteTables" for the node group to allow cilium to setup routing tables for pods. limited to ec2 instances from the node group role
 resource "aws_iam_policy" "aws_describe_route_tables_policy_${eks_region_k}_${eks_name}_${eng_name}" {
   name        = "$${local.env_short}-${eks_name}-${eng_name}-describe-route-tables-policy"
@@ -409,6 +428,7 @@ resource "aws_iam_role_policy_attachment" "node_group_describe_route_tables_poli
   policy_arn = aws_iam_policy.aws_describe_route_tables_policy_${eks_region_k}_${eks_name}_${eng_name}.arn
   role       = module.eks_node_group_${eks_region_k}_${eks_name}_${eng_name}.eks_node_group_role_name
 }
+%{~ endif ~}
 
 # add a bootstrap ssm script execution to setup any extra dependency as efs-utils
 resource "aws_ssm_association" "bootstrap_${eks_region_k}_${eks_name}_${eng_name}" {
@@ -552,6 +572,9 @@ resource "aws_iam_role_policy_attachment" "ebs_policy_${eks_region_k}_${eks_name
 
     %{ endfor ~}
 
+%{~ if chomp(try("${eks_values.network.cni.mode}", "amazon-vpc-cni")) == "cilium" ~}
+# Cilium-only: with amazon-vpc-cni, aws-node and kube-proxy must keep running.
+
 # kube-proxy will be replaced by cilium, so we need to delete the kube-proxy daemonset if it exists to avoid conflicts
 # also aws-node needs to be removed to avoid cni conflicts with cilium
 
@@ -583,12 +606,17 @@ k8sServiceHost: $${replace(module.eks_cluster_${eks_region_k}_${eks_name}.eks_cl
 k8sServicePort: 443
 nodeSelector:
   x-eks.amazonaws.com/managed-node: "true"
-mtu: 8951
-devices: "ens+"
-ipv4NativeRoutingCIDR: 10.128.0.0/9
+mtu: ${ chomp(try("${eks_values.network.cni.mtu}", "8951")) }
+devices: "${ chomp(try("${eks_values.network.cni.devices}", "ens+")) }"
+# defaults to the EKS VPC CIDR; override with network.cni.native-routing-cidr for multi-VPC meshes
+%{ if try("${eks_values.network.cni.native-routing-cidr}", "") != "" ~}
+ipv4NativeRoutingCIDR: ${ chomp(try("${eks_values.network.cni.native-routing-cidr}", "")) }
+%{ else ~}
+ipv4NativeRoutingCIDR: $${jsondecode(var.vpcs_json).vpc_${eks_region_k}_${eks_values.network.vpc}.vpc_info.vpc_cidr_block}
+%{ endif ~}
 bpf:
   hostLegacyRouting: true
-  hostRoutingMTU: 8951
+  hostRoutingMTU: ${ chomp(try("${eks_values.network.cni.host-routing-mtu}", chomp(try("${eks_values.network.cni.mtu}", "8951")))) }
   masquerade: true
 #  hostRoutingMTU: 9001
 extraArgs:
@@ -659,6 +687,7 @@ resource "helm_release" "${eks_region_k}_${eks_name}_cilium" {
   depends_on = [resource.null_resource.${eks_region_k}_${eks_name}_delete_daemonsets]
 
 }
+%{~ endif ~}
 
     %{ if try(eks_values.hybrid-node-groups, "") != "" }
 
@@ -969,8 +998,7 @@ module "hybrid_node_asg_${eks_region_k}_${eks_name}_${hng_name}" {
   #source  = "cloudposse/ec2-autoscale-group/aws"
   #version = "0.43.1"
 
-  # depends on cilium_hybrid setup
-  depends_on = [helm_release.${eks_region_k}_${eks_name}_${hng_name}_cilium_hybrid]
+  # no depends_on on the cilium_hybrid release either - same reason as the managed node groups
 
   providers = {
     aws = aws.${hng_values.network.region}
@@ -1077,12 +1105,19 @@ k8sServiceHost: $${replace(module.eks_cluster_${eks_region_k}_${eks_name}.eks_cl
 k8sServicePort: 443
 nodeSelector:
   eks.amazonaws.com/nodegroup: ${hng_name}
-mtu: 8951
-devices: "ens+"
-ipv4NativeRoutingCIDR: 10.128.0.0/9
+mtu: ${ chomp(try("${eks_values.network.hybrid-nodes.cni.mtu}", chomp(try("${eks_values.network.cni.mtu}", "8951")))) }
+devices: "${ chomp(try("${eks_values.network.hybrid-nodes.cni.devices}", chomp(try("${eks_values.network.cni.devices}", "ens+")))) }"
+# WARNING: ENI IPAM puts hybrid Pod IPs in the hybrid VPC's subnets; AWS documents cluster-pool +
+# overlay for hybrid nodes. Rework before enabling hybrid groups (see HYBRID_NODES.md).
+# defaults to the hybrid VPC CIDR; override with network.hybrid-nodes.cni.native-routing-cidr
+%{ if try("${eks_values.network.hybrid-nodes.cni.native-routing-cidr}", "") != "" ~}
+ipv4NativeRoutingCIDR: ${ chomp(try("${eks_values.network.hybrid-nodes.cni.native-routing-cidr}", "")) }
+%{ else ~}
+ipv4NativeRoutingCIDR: $${jsondecode(var.vpcs_json).vpc_${hng_values.network.region}_${hng_values.network.vpc}.vpc_info.vpc_cidr_block}
+%{ endif ~}
 bpf:
   hostLegacyRouting: true
-  hostRoutingMTU: 8951
+  hostRoutingMTU: ${ chomp(try("${eks_values.network.hybrid-nodes.cni.host-routing-mtu}", chomp(try("${eks_values.network.hybrid-nodes.cni.mtu}", chomp(try("${eks_values.network.cni.mtu}", "8951")))))) }
   masquerade: true
 #  hostRoutingMTU: 9001
 extraArgs:
@@ -1157,7 +1192,10 @@ resource "helm_release" "${eks_region_k}_${eks_name}_${hng_name}_cilium_hybrid" 
     ]
   }
 
+%{~ if chomp(try("${eks_values.network.cni.mode}", "amazon-vpc-cni")) == "cilium" ~}
+  # delete aws-node/kube-proxy only when Cilium replaces them cluster-wide
   depends_on = [resource.null_resource.${eks_region_k}_${eks_name}_delete_daemonsets]
+%{~ endif ~}
 
 }
 
